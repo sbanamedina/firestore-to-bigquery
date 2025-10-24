@@ -188,6 +188,8 @@ def get_last_execution_time_from_bq(collection_name: str, database_name: str) ->
 def export_firestore_to_bigquery(request):
     start_time = datetime.now(timezone.utc)
     request_json = request.get_json(silent=True)
+    print(f'🔹 Payload recibido: {request_json}')
+
     if not request_json or 'collection' not in request_json or 'table' not in request_json:
         return jsonify({'error': 'Missing collection or table parameter in request'}), 400
 
@@ -198,6 +200,7 @@ def export_firestore_to_bigquery(request):
     updated_field = request_json.get('updated_field')  # Nombre del campo en Firestore
     full_export = request_json.get('full_export', False)
     page_size = request_json.get('page_size', 500)
+    print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
 
     if was_recently_executed_bq(var_main_collection, var_database):
         return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200
@@ -220,14 +223,19 @@ def export_firestore_to_bigquery(request):
     var_dataset_id = 'firestore'
 
     # Procesar colección
+    print(f"🔍 Procesando colección: {var_main_collection}")
     example_docs, fields = process_collection(firestore_client, var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
     if not example_docs:
         return jsonify({'error': 'No documents found in the Firestore collection'}), 404
 
+    print(f"✅ Documentos extraídos: {len(example_docs)}")
+
     temp_file_path = '/tmp/firestore_data.json'
+    print('📝 Creando archivo JSON temporal...')
     with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
         for doc in example_docs:
             temp_file.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
+    print('📝 Archivo JSON temporal creado:', temp_file_path)
 
     # Crear esquema y tabla BigQuery
     fields = list(set(f.lower() for f in fields))
@@ -245,6 +253,7 @@ def export_firestore_to_bigquery(request):
     # -----------------------
     # Cargar tabla temporal
     # -----------------------
+    print('📝 Creando tabla temporal...')
     temp_table_id = var_table_id + "_temp"
     temp_table_ref = bigquery_client.dataset(var_dataset_id).table(temp_table_id)
     bigquery_client.create_table(bigquery.Table(temp_table_ref, schema=schema), exists_ok=True)
@@ -257,12 +266,14 @@ def export_firestore_to_bigquery(request):
         max_bad_records=50
     )
     with open(temp_file_path, "rb") as source_file:
+        print('📝 Cargando tabla temporal...')
         bigquery_client.load_table_from_file(source_file, temp_table_ref, job_config=job_config_temp).result()
 
     # -----------------------
     # MERGE / DELETE si incremental
     # -----------------------
     if not full_export:
+        print('📝 Merge / Delete si incremental...')
         merge_sql = f"""
             MERGE `{var_dataset_id}.{var_table_id}` T
             USING `{var_dataset_id}.{temp_table_id}` S
@@ -277,8 +288,10 @@ def export_firestore_to_bigquery(request):
             WHERE id NOT IN (SELECT id FROM `{var_dataset_id}.{temp_table_id}`)
         """
         bigquery_client.query(delete_sql).result()
+        print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
 
     else:
+        print('📝 Full export: sobrescribe la tabla...')
         # Full export: sobrescribe la tabla
         job_config_full = bigquery.LoadJobConfig(
             schema=schema,
@@ -289,6 +302,7 @@ def export_firestore_to_bigquery(request):
         )
         with open(temp_file_path, "rb") as source_file:
             bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
+        print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
 
     duration = (datetime.now(timezone.utc) - start_time).total_seconds()
     return jsonify({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
