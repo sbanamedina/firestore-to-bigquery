@@ -193,18 +193,51 @@ def get_last_export_time(bq_client: bigquery.Client, collection_name: str) -> Op
 # Firestore processing
 # ---------------------------
 
-def process_document(doc_snapshot, parent_path: str = '', sep: str = '_', max_level: int = 2, handle_subcollections: bool = False):
+def process_document(
+    doc_snapshot,
+    parent_path: str = '',
+    sep: str = '_',
+    max_level: int = 2,
+    handle_subcollections: bool = False,
+    subcollection_level: int = 0,
+    max_subcollection_level: int = 2,
+    incremental_field: Optional[str] = None,
+    last_export: Optional[datetime] = None
+):
+    """
+    Procesa un documento de Firestore, aplana sus campos y opcionalmente procesa subcollections.
+    Permite filtrado incremental en subcollections si se proporciona `incremental_field` y `last_export`.
+    """
     try:
         doc_data = doc_snapshot.to_dict() or {}
         doc_data['id'] = doc_snapshot.id
         doc_data['document_path'] = f"{parent_path}{sep}{doc_snapshot.id}" if parent_path else doc_snapshot.id
+
+        # Flatten principal
         flattened = flatten_dict(doc_data, parent_key='', sep=sep, max_level=max_level)
         results = [flattened]
         fields = set(flattened.keys())
-        if handle_subcollections:
+
+        # Procesar subcollections
+        if handle_subcollections and subcollection_level < max_subcollection_level:
             for subcol in doc_snapshot.reference.collections():
                 for subdoc in subcol.stream():
-                    sub_results, sub_fields = process_document(subdoc, parent_path=f"{parent_path}{sep}{subcol.id}", sep=sep, max_level=max_level, handle_subcollections=False)
+                    # Filtrado incremental en subcollection
+                    if incremental_field and last_export:
+                        val = subdoc.get(incremental_field)
+                        if val and val <= last_export:
+                            continue
+                    sub_results, sub_fields = process_document(
+                        subdoc,
+                        parent_path=f"{doc_data['document_path']}{sep}{subcol.id}",
+                        sep=sep,
+                        max_level=max_level,
+                        handle_subcollections=handle_subcollections,
+                        subcollection_level=subcollection_level + 1,
+                        max_subcollection_level=max_subcollection_level,
+                        incremental_field=incremental_field,
+                        last_export=last_export
+                    )
                     results.extend(sub_results)
                     fields.update(sub_fields)
         return results, fields
@@ -221,7 +254,7 @@ def process_collection(
     page_size: int = DEFAULT_PAGE_SIZE,
     handle_subcollections: bool = False,
     query=None,
-    full_export: bool = False  # <-- agregar aquí
+    full_export: bool = False  
 ):
     fields = set()
     example_docs = []
@@ -293,49 +326,26 @@ def export_firestore_to_bigquery(request):
     if not collection or not table:
         return ({'error': 'Missing collection or table parameter in request'}, 400)
 
+    success = False
     try:
         secret = access_secret_version(PROJECT_SECRETS_PROJECT, CREDENTIAL_SECRET_ID)
         fs_client, bq_client, gcs_client = build_clients_from_secret(secret)
 
-        # Check dedupe/lock in BigQuery
+        # Check lock
         if was_recently_executed_bq(bq_client, collection, database, window_minutes=LOCK_WINDOW_MINUTES):
             logger.info("Duplicate execution detected. Skipping for collection %s", collection)
             return ({'warning': 'Duplicate execution; skipping'}, 200)
 
-        # Decide incremental query
+        # Incremental query
         query = None
+        last_export = None
         if not full_export:
             last_export = get_last_export_time(bq_client, collection)
             if last_export:
-                logger.info("Last export for %s was %s. Running incremental from that timestamp.", collection, last_export)
-                # Firestore expects naive UTC or with tz; we store as iso. Use where if field exists.
-                # If the field doesn't exist in docs, this will just return none.
-                try:
-                    query = fs_client.collection(collection).where(INCREMENTAL_FIELD, '>', last_export).order_by(INCREMENTAL_FIELD).limit(page_size)
-                except Exception as e:
-                    logger.warning("Could not build incremental query on field %s: %s. Falling back to full export.", INCREMENTAL_FIELD, e)
-                    query = None
-            else:
-                logger.info("No checkpoint found for %s; running full export.", collection)
-        
-        # --- Debug Firestore Connection ---
-        logger.info("🔍 Verificando conexión a Firestore...")
-        logger.info("Firestore project configurado: %s", FIRESTORE_PROJECT)
-        logger.info("Database usada (solo informativo): %s", database)
-        logger.info("Colección solicitada: %s", collection)
-
-        try:
-            test_collection = fs_client.collection(collection)
-            test_docs = list(test_collection.limit(3).stream())
-            logger.info("✅ Firestore accesible. Primeros %d documentos detectados en '%s'.", len(test_docs), collection)
-            for doc in test_docs:
-                logger.info("   • Documento ID: %s", doc.id)
-        except Exception as e:
-            logger.exception("❌ Error accediendo a la colección %s: %s", collection, e)
-
-        logger.info("Probar stream directo:")
-        for doc in fs_client.collection(collection).limit(5).stream():
-            logger.info("   • Documento ID directo: %s", doc.id)
+                query = fs_client.collection(collection)\
+                    .where(INCREMENTAL_FIELD, '>', last_export)\
+                    .order_by(INCREMENTAL_FIELD)\
+                    .limit(page_size)
 
         # Process collection
         docs, fields = process_collection(
@@ -346,25 +356,22 @@ def export_firestore_to_bigquery(request):
             page_size=page_size,
             handle_subcollections=handle_subcollections,
             query=query,
-            full_export=full_export 
+            full_export=full_export,
+            incremental_field=INCREMENTAL_FIELD,
+            last_export=last_export
         )
 
         if not docs:
             logger.info("No documents to export for %s", collection)
+            success = True
             return ({'message': 'No documents found'}, 200)
 
-        # Write NDJSON to /tmp then upload to GCS
+        # Write NDJSON
         tmp_path = f"/tmp/{collection}_export_{start_time.strftime('%Y%m%dT%H%M%SZ')}.ndjson"
-        invalid_count = 0
         with open(tmp_path, 'w', encoding='utf-8') as f:
             for doc in docs:
-                try:
-                    cleaned = {k: serialize_value(v) for k, v in doc.items()}
-                    json.dump(cleaned, f, ensure_ascii=False)
-                    f.write('\n')
-                except Exception:
-                    invalid_count += 1
-        logger.info("Wrote NDJSON to %s with %s invalid docs", tmp_path, invalid_count)
+                json.dump({k: serialize_value(v) for k, v in doc.items()}, f, ensure_ascii=False)
+                f.write('\n')
 
         # Upload to GCS
         gcs_path = f"firestore_exports/{collection}/{os.path.basename(tmp_path)}"
@@ -380,14 +387,21 @@ def export_firestore_to_bigquery(request):
             max_bad_records=50,
         )
         load_job = bq_client.load_table_from_uri(uri, table_ref, job_config=job_config)
-        logger.info("Started BigQuery load job %s", load_job.job_id)
         load_job.result()
         logger.info("BigQuery load job completed")
+        success = True
 
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-
         return ({'message': f'Loaded {len(docs)} documents into {table}', 'duration_seconds': duration}, 200)
 
     except Exception as e:
         logger.exception("Unhandled error: %s", e)
         return ({'error': str(e)}, 500)
+    finally:
+        # Update lock table with success/failure
+        try:
+            lock_table = f"{bq_client.project}.{BQ_DATASET}.{BQ_LOCK_TABLE}"
+            meta = json.dumps({"started_at": start_time.isoformat(), "finished_at": datetime.now(timezone.utc).isoformat(), "success": success})
+            bq_client.insert_rows_json(lock_table, [{"collection": collection, "database": database, "execution_time": start_time.isoformat(), "meta": meta}])
+        except Exception as e:
+            logger.warning("Could not update lock table final status: %s", e)
