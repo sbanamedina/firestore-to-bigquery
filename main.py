@@ -101,7 +101,6 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     last_doc = None
 
     if updated_after and updated_field:
-        # Solo documentos con `updated_field` mayor a updated_after
         collection_ref = collection_ref.where(updated_field, ">", updated_after)
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -162,38 +161,25 @@ def was_recently_executed_bq(collection_name: str, database_name: str, window_mi
     return False
 
 def get_last_execution_time_from_bq(collection_name: str, database_name: str) -> datetime:
-    """
-    Retorna la fecha de la última ejecución exitosa para la colección.
-    """
     client = bigquery.Client(project='sb-operacional-zone')
     dataset_id = "dataops"
     table_id = "t_firestore_log_function_locks"
     full_table_id = f"{client.project}.{dataset_id}.{table_id}"
-
     query = f"""
         SELECT MAX(execution_time) AS last_execution
         FROM `{full_table_id}`
-        WHERE collection = @collection
-        AND database = @database
+        WHERE collection = @collection AND database = @database
     """
-
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("collection", "STRING", collection_name),
             bigquery.ScalarQueryParameter("database", "STRING", database_name),
         ]
     )
-
-    query_job = client.query(query, job_config=job_config)
-    result = query_job.result()
-    rows = list(result)
-
-    if rows and rows[0].last_execution:
-        return rows[0].last_execution.replace(tzinfo=timezone.utc)
-    else:
-        # No hay ejecución previa, retornar None para full export
-        return None
-
+    result = list(client.query(query, job_config=job_config).result())
+    if result and result[0].last_execution:
+        return result[0].last_execution.replace(tzinfo=timezone.utc)
+    return None
 
 # -------------------------------
 # Función HTTP principal
@@ -204,6 +190,7 @@ def export_firestore_to_bigquery(request):
     request_json = request.get_json(silent=True)
     if not request_json or 'collection' not in request_json or 'table' not in request_json:
         return jsonify({'error': 'Missing collection or table parameter in request'}), 400
+
     var_main_collection = request_json['collection']
     var_table_id = request_json['table']
     handle_subcollections = request_json.get('handle_subcollections', False)
@@ -211,7 +198,7 @@ def export_firestore_to_bigquery(request):
     updated_field = request_json.get('updated_field')  # Nombre del campo en Firestore
     full_export = request_json.get('full_export', False)
     page_size = request_json.get('page_size', 500)
-    updated_after = None
+
     if was_recently_executed_bq(var_main_collection, var_database):
         return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200
 
@@ -222,6 +209,7 @@ def export_firestore_to_bigquery(request):
     with open(lock_file_path, "w") as lock_file:
         lock_file.write("lock")
     
+    updated_after = None
     if not full_export and updated_field:
         updated_after = get_last_execution_time_from_bq(var_main_collection, var_database)
 
@@ -246,9 +234,64 @@ def export_firestore_to_bigquery(request):
     schema = [bigquery.SchemaField(f, "STRING", mode="NULLABLE") for f in fields]
     table_ref = bigquery_client.dataset(var_dataset_id).table(var_table_id)
     bigquery_client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
-    job_config = bigquery.LoadJobConfig(schema=schema, source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON, write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE, autodetect=True, max_bad_records=50)
+
+    # job_config = bigquery.LoadJobConfig(schema=schema, source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON, write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE, autodetect=True, max_bad_records=50)
+    # with open(temp_file_path, "rb") as source_file:
+    #     bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config).result()
+
+    # duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+    # return jsonify({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
+
+    # -----------------------
+    # Cargar tabla temporal
+    # -----------------------
+    temp_table_id = var_table_id + "_temp"
+    temp_table_ref = bigquery_client.dataset(var_dataset_id).table(temp_table_id)
+    bigquery_client.create_table(bigquery.Table(temp_table_ref, schema=schema), exists_ok=True)
+
+    job_config_temp = bigquery.LoadJobConfig(
+        schema=schema,
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        autodetect=True,
+        max_bad_records=50
+    )
     with open(temp_file_path, "rb") as source_file:
-        bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config).result()
+        bigquery_client.load_table_from_file(source_file, temp_table_ref, job_config=job_config_temp).result()
+
+    # -----------------------
+    # MERGE / DELETE si incremental
+    # -----------------------
+    if not full_export:
+        merge_sql = f"""
+            MERGE `{var_dataset_id}.{var_table_id}` T
+            USING `{var_dataset_id}.{temp_table_id}` S
+            ON T.id = S.id
+            WHEN MATCHED THEN UPDATE SET {', '.join([f'T.{f} = S.{f}' for f in fields])}
+            WHEN NOT MATCHED THEN INSERT ({', '.join(fields)}) VALUES ({', '.join([f'S.{f}' for f in fields])})
+        """
+        bigquery_client.query(merge_sql).result()
+
+        delete_sql = f"""
+            DELETE FROM `{var_dataset_id}.{var_table_id}`
+            WHERE id NOT IN (SELECT id FROM `{var_dataset_id}.{temp_table_id}`)
+        """
+        bigquery_client.query(delete_sql).result()
+
+    else:
+        # Full export: sobrescribe la tabla
+        job_config_full = bigquery.LoadJobConfig(
+            schema=schema,
+            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            autodetect=True,
+            max_bad_records=50
+        )
+        with open(temp_file_path, "rb") as source_file:
+            bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
 
     duration = (datetime.now(timezone.utc) - start_time).total_seconds()
     return jsonify({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
+
+
+
