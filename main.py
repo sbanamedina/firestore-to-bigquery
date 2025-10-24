@@ -333,6 +333,9 @@ def export_firestore_to_bigquery(request):
         except Exception as e:
             logger.exception("❌ Error accediendo a la colección %s: %s", collection, e)
 
+        logger.info("Probar stream directo:")
+        for doc in fs_client.collection(collection).limit(5).stream():
+            logger.info("   • Documento ID directo: %s", doc.id)
 
         # Process collection
         docs, fields = process_collection(
