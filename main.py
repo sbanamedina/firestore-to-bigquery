@@ -243,7 +243,9 @@ def process_collection(
     page_size: int = DEFAULT_PAGE_SIZE,
     handle_subcollections: bool = False,
     query=None,
-    full_export: bool = False  
+    full_export: bool = False,
+    incremental_field=INCREMENTAL_FIELD,
+    last_export=Optional[datetime] = None  
 ):
     fields = set()
     example_docs = []
@@ -313,19 +315,32 @@ def export_firestore_to_bigquery(request):
     full_export = request_json.get('full_export', False)
 
     if not collection or not table:
-        return ({'error': 'Missing collection or table parameter in request'}, 400)
+        return ({'error': 'Missing collection or table parameter'}, 400)
 
     success = False
+    bq_client = None
+
     try:
+        # 🔑 Obtener clientes
         secret = access_secret_version(PROJECT_SECRETS_PROJECT, CREDENTIAL_SECRET_ID)
         fs_client, bq_client, gcs_client = build_clients_from_secret(secret)
 
-        # Check lock
+        # -------------------------
+        # Bloqueo inicial
+        # -------------------------
+        ensure_lock_table(bq_client)
         if was_recently_executed_bq(bq_client, collection, database, window_minutes=LOCK_WINDOW_MINUTES):
             logger.info("Duplicate execution detected. Skipping for collection %s", collection)
             return ({'warning': 'Duplicate execution; skipping'}, 200)
 
-        # Incremental query
+        # Insertar registro "in progress" para evitar reintentos concurrentes
+        lock_table = f"{bq_client.project}.{BQ_DATASET}.{BQ_LOCK_TABLE}"
+        meta = json.dumps({"started_at": start_time.isoformat(), "status": "in_progress"})
+        bq_client.insert_rows_json(lock_table, [{"collection": collection, "database": database, "execution_time": start_time.isoformat(), "meta": meta}])
+
+        # -------------------------
+        # Determinar export incremental
+        # -------------------------
         query = None
         last_export = None
         if not full_export:
@@ -336,7 +351,9 @@ def export_firestore_to_bigquery(request):
                     .order_by(INCREMENTAL_FIELD)\
                     .limit(page_size)
 
-        # Process collection
+        # -------------------------
+        # Procesar colección
+        # -------------------------
         docs, fields = process_collection(
             fs_client,
             collection,
@@ -355,18 +372,24 @@ def export_firestore_to_bigquery(request):
             success = True
             return ({'message': 'No documents found'}, 200)
 
-        # Write NDJSON
+        # -------------------------
+        # Guardar NDJSON temporal
+        # -------------------------
         tmp_path = f"/tmp/{collection}_export_{start_time.strftime('%Y%m%dT%H%M%SZ')}.ndjson"
         with open(tmp_path, 'w', encoding='utf-8') as f:
             for doc in docs:
                 json.dump({k: serialize_value(v) for k, v in doc.items()}, f, ensure_ascii=False)
                 f.write('\n')
 
-        # Upload to GCS
+        # -------------------------
+        # Subir a GCS
+        # -------------------------
         gcs_path = f"firestore_exports/{collection}/{os.path.basename(tmp_path)}"
         uri = upload_ndjson_to_gcs(gcs_client, GCS_BUCKET, tmp_path, gcs_path)
 
-        # Load into BigQuery
+        # -------------------------
+        # Cargar en BigQuery
+        # -------------------------
         dataset_ref = bigquery.DatasetReference(BQ_PROJECT, BQ_DATASET)
         table_ref = dataset_ref.table(table)
         job_config = bigquery.LoadJobConfig(
@@ -386,11 +409,18 @@ def export_firestore_to_bigquery(request):
     except Exception as e:
         logger.exception("Unhandled error: %s", e)
         return ({'error': str(e)}, 500)
+
     finally:
-        # Update lock table with success/failure
-        try:
-            lock_table = f"{bq_client.project}.{BQ_DATASET}.{BQ_LOCK_TABLE}"
-            meta = json.dumps({"started_at": start_time.isoformat(), "finished_at": datetime.now(timezone.utc).isoformat(), "success": success})
-            bq_client.insert_rows_json(lock_table, [{"collection": collection, "database": database, "execution_time": start_time.isoformat(), "meta": meta}])
-        except Exception as e:
-            logger.warning("Could not update lock table final status: %s", e)
+        # -------------------------
+        # Actualizar lock final
+        # -------------------------
+        if bq_client:
+            try:
+                meta = json.dumps({
+                    "started_at": start_time.isoformat(),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "success": success
+                })
+                bq_client.insert_rows_json(lock_table, [{"collection": collection, "database": database, "execution_time": start_time.isoformat(), "meta": meta}])
+            except Exception as e:
+                logger.warning("Could not update lock table final status: %s", e)
