@@ -1,30 +1,56 @@
 # cloudbuild.yaml
 steps:
-  # 1️⃣ Construir la imagen Docker
   - name: 'gcr.io/cloud-builders/docker'
-    args: [
-      'build',
-      '-t',
-      'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-db-to-bigquery-optimized:latest',
-      '.'
-    ]
+    args:
+      [
+        'build',
+        '-t',
+        'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-to-bigquery/firestore-db-to-bigquery-optimized:$SHORT_SHA',
+        '.'
+      ]
 
-  # 2️⃣ Subir la imagen a Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: [
-      'push',
-      'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-db-to-bigquery-optimized:latest'
-    ]
+    args:
+      [
+        'push',
+        'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-to-bigquery/firestore-db-to-bigquery-optimized:$SHORT_SHA'
+      ]
 
-  # 3️⃣ Desplegar a Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: 'gcloud'
-    args: [
-      'run', 'deploy', 'firestore-db-to-bigquery-optimized',
-      '--image', 'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-db-to-bigquery-optimized:latest',
-      '--region', 'us-east1',
-      '--platform', 'managed',
-      '--allow-unauthenticated'
-    ]
+    entrypoint: gcloud
+    args:
+      [
+        'run',
+        'deploy',
+        'firestore-db-to-bigquery-optimized',
+        '--image',
+        'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-to-bigquery/firestore-db-to-bigquery-optimized:$SHORT_SHA',
+        '--region',
+        'us-east1',
+        '--platform',
+        'managed',
+        '--allow-unauthenticated',
+        '--port',
+        '8080',
+        '--max-instances',
+        '1',
+        '--cpu',
+        '4',
+        '--memory',
+        '8Gi',
+        '--timeout',
+        '3600s',
+        '--concurrency',
+        '320',
+        '--update-env-vars',
+        'SECRETS_PROJECT=sb-operacional-zone,CREDENTIAL_SECRET_ID=sb-xops-prod_appspot_gserviceaccount,FIRESTORE_PROJECT=sb-xops-prod,BQ_PROJECT=sb-operacional-zone,BQ_DATASET=firestore,BQ_LOCK_TABLE=t_firestore_log_function_locks,GCS_BUCKET=sb-temp-exports'
+      ]
 
+images:
+  - 'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-to-bigquery/firestore-db-to-bigquery-optimized:$SHORT_SHA'
 
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+# Usar service account para ejecutar build
+serviceAccount: sb-operacional-zone@appspot.gserviceaccount.com
