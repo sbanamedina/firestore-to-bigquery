@@ -54,21 +54,22 @@ def serialize_value(value):
 # Flatten de documentos
 # -------------------------------
 def flatten_dict(d, parent_key='', sep='_', level=1, max_level=2):
-    items = []
+    items = {}
     if level > max_level:
-        items.append((parent_key, json.dumps(d)))
-        return dict(items)
+        items[parent_key] = json.dumps(d)
+        return items
+
     for k, v in d.items():
         new_key = f"{parent_key}{sep}{k}" if parent_key else k
         new_key = re.sub(r'\W+', '_', new_key).lower()
         v = serialize_value(v)
         if isinstance(v, dict):
-            items.update(flatten_dict(v, new_key, sep, level+1, max_level).items())
+            items.update(flatten_dict(v, new_key, sep, level+1, max_level))
         elif isinstance(v, list):
-            items.append((new_key, json.dumps(v)))
+            items[new_key] = json.dumps(v)
         else:
-            items.append((new_key, v))
-    return dict(items)
+            items[new_key] = v
+    return items
 
 # -------------------------------
 # Procesamiento de documentos y colecciones
