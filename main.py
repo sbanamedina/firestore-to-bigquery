@@ -12,6 +12,8 @@ from google.cloud import firestore, bigquery, secretmanager
 from google.oauth2 import service_account
 import sys
 import logging
+from google.api_core.retry import Retry
+from google.api_core.exceptions import GoogleAPICallError
 
 # -------------------------------
 # Acceso a secretos
@@ -75,46 +77,56 @@ def flatten_dict(d, parent_key='', sep='_', level=1, max_level=2):
 # -------------------------------
 # Procesamiento de documentos y colecciones
 # -------------------------------
-def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_level=2, handle_subcollections=False, updated_after=None, updated_field=None):
+
+def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_level=2,
+                     handle_subcollections=False, updated_after=None, updated_field=None):
     fields = set()
     example_docs = []
-    doc = doc_ref.get()
+
+    try:
+        doc = doc_ref.get()
+    except GoogleAPICallError as e:
+        print(f"⚠️ Error al obtener doc {doc_ref.path}: {e}")
+        return example_docs, fields
+
     if not doc.exists:
         return example_docs, fields
     doc_data = doc.to_dict()
 
-        # Validar incremental
+    # Validar incremental
     if updated_after and updated_field and updated_field in doc_data:
         doc_value = doc_data[updated_field]
-        if isinstance(doc_value, datetime):
-            doc_dt = doc_value
-        else:
-            # Convertir a datetime si viene como string
-            doc_dt = datetime.fromisoformat(str(doc_value))
+        doc_dt = doc_value if isinstance(doc_value, datetime) else datetime.fromisoformat(str(doc_value))
         if doc_dt <= updated_after:
-            return example_docs, fields  # Saltar este documento
+            return example_docs, fields
 
     doc_data['id'] = doc.id
     doc_data['document_path'] = parent_path + sep + doc.id
     flattened_data = flatten_dict(doc_data, sep=sep, max_level=max_level)
     example_docs.append(flattened_data)
     fields.update(flattened_data.keys())
+
     if handle_subcollections:
-        for subcollection in doc_ref.collections():
-            subcollection_path = f"{parent_path}{sep}{subcollection.id}" if parent_path else subcollection.id
-            for sub_doc in subcollection.stream():
-                sub_docs, sub_fields = process_document(
-                    firestore_client,
-                    sub_doc.reference,
-                    parent_path=subcollection_path,
-                    sep=sep,
-                    max_level=max_level,
-                    handle_subcollections=True,
-                    updated_after=updated_after,
-                    updated_field=updated_field
-                )
-                example_docs.extend(sub_docs)
-                fields.update(sub_fields)
+        try:
+            # Usar retry con deadline extendido
+            for subcollection in doc_ref.collections(retry=Retry(deadline=300)):
+                subcollection_path = f"{parent_path}{sep}{subcollection.id}" if parent_path else subcollection.id
+                for sub_doc in subcollection.stream():
+                    sub_docs, sub_fields = process_document(
+                        firestore_client,
+                        sub_doc.reference,
+                        parent_path=subcollection_path,
+                        sep=sep,
+                        max_level=max_level,
+                        handle_subcollections=True,
+                        updated_after=updated_after,
+                        updated_field=updated_field
+                    )
+                    example_docs.extend(sub_docs)
+                    fields.update(sub_fields)
+        except GoogleAPICallError as e:
+            print(f"⚠️ Error al listar subcollections de {doc_ref.path}: {e}")
+
     return example_docs, fields
 
 def process_collection(firestore_client, collection_name, sep='_', max_level=2, page_size=500, handle_subcollections=False, updated_after=None, updated_field=None):
