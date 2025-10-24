@@ -289,8 +289,9 @@ def export_firestore_to_bigquery(request):
     #         bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
     #     print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
 
-    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-    return ({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
+    # duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+    # return ({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
+    return ({'message': f'documentos cargados correctamente'}), 200
 
 
 
