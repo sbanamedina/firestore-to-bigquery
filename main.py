@@ -135,17 +135,34 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     collection_ref = firestore_client.collection(collection_name)
     last_doc = None
 
+    # Ajuste de where + order_by
     if updated_after and updated_field:
         collection_ref = collection_ref.where(updated_field, ">", updated_after)
+        collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
+    else:
+        collection_ref = collection_ref.order_by("__name__")
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         while True:
-            query = collection_ref.order_by("__name__").limit(page_size)
+            query = collection_ref.limit(page_size)  # <- No volver a order_by
             if last_doc:
                 query = query.start_after(last_doc)
             docs = list(query.stream())
             batch_docs = []
-            futures = [executor.submit(process_document, firestore_client, doc.reference, f"{collection_name}{sep}{doc.id}", sep, max_level, handle_subcollections, updated_after, updated_field) for doc in docs]
+            futures = [
+                executor.submit(
+                    process_document,
+                    firestore_client,
+                    doc.reference,
+                    f"{collection_name}{sep}{doc.id}",
+                    sep,
+                    max_level,
+                    handle_subcollections,
+                    updated_after,
+                    updated_field
+                )
+                for doc in docs
+            ]
             for future in concurrent.futures.as_completed(futures):
                 doc_docs, doc_fields = future.result()
                 batch_docs.extend(doc_docs)
@@ -153,9 +170,11 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
             if docs:
                 last_doc = docs[-1]
             example_docs.extend(batch_docs)
-            if len(batch_docs) < page_size:
+            if len(docs) < page_size:  # <- comparar con docs, no batch_docs
                 break
+
     return example_docs, fields
+
 
 # -------------------------------
 # Control de ejecución duplicada en BigQuery
