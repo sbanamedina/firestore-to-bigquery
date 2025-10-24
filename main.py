@@ -245,7 +245,7 @@ def process_collection(
     query=None,
     full_export: bool = False,
     incremental_field=INCREMENTAL_FIELD,
-    last_export=Optional[datetime] = None  
+    last_export: Optional[datetime] = None  
 ):
     fields = set()
     example_docs = []
@@ -257,7 +257,6 @@ def process_collection(
             if query is not None:
                 docs = list(query.stream())
             elif full_export:
-                # Full export: tomar todos los documentos sin limitar ni order_by
                 docs = list(collection_ref.stream())
                 if not docs:
                     break
@@ -270,7 +269,20 @@ def process_collection(
             if not docs:
                 break
 
-            futures = [executor.submit(process_document, doc, f"{collection_name}{sep}{doc.id}", sep, max_level, handle_subcollections) for doc in docs]
+            futures = [
+                executor.submit(
+                    process_document,
+                    doc,
+                    parent_path=f"{collection_name}{sep}{doc.id}",
+                    sep=sep,
+                    max_level=max_level,
+                    handle_subcollections=handle_subcollections,
+                    incremental_field=incremental_field,  
+                    last_export=last_export              
+                )
+                for doc in docs
+            ]
+
             for future in concurrent.futures.as_completed(futures):
                 doc_docs, doc_fields = future.result()
                 example_docs.extend(doc_docs)
