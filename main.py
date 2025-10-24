@@ -10,6 +10,8 @@ from datetime import datetime, timezone, timedelta
 import functions_framework
 from google.cloud import firestore, bigquery, secretmanager
 from google.oauth2 import service_account
+import sys
+import logging
 
 # -------------------------------
 # Acceso a secretos
@@ -186,23 +188,25 @@ def get_last_execution_time_from_bq(collection_name: str, database_name: str) ->
 # -------------------------------
 @functions_framework.http
 def export_firestore_to_bigquery(request):
-    print("✅ Request entró a la función")
+    logging.info("✅ Request entró a la función")
+    start_time = datetime.now(timezone.utc)
+    request_json = request.get_json(silent=True)
+    print(f'🔹 Payload recibido: {request_json}')
+    sys.stdout.flush()
+
+    if not request_json or 'collection' not in request_json or 'table' not in request_json:
+        return ({'error': 'Missing collection or table parameter in request'}), 400
+
+    var_main_collection = request_json['collection']
+    var_table_id = request_json['table']
+    handle_subcollections = request_json.get('handle_subcollections', False)
+    var_database = request_json.get('database', '(default)')
+    updated_field = request_json.get('updated_field')  # Nombre del campo en Firestore
+    full_export = request_json.get('full_export', False)
+    page_size = request_json.get('page_size', 500)
+    print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
+    sys.stdout.flush()
     return {"message": "test"}, 200
-    # start_time = datetime.now(timezone.utc)
-    # request_json = request.get_json(silent=True)
-    # print(f'🔹 Payload recibido: {request_json}')
-
-    # if not request_json or 'collection' not in request_json or 'table' not in request_json:
-    #     return ({'error': 'Missing collection or table parameter in request'}), 400
-
-    # var_main_collection = request_json['collection']
-    # var_table_id = request_json['table']
-    # handle_subcollections = request_json.get('handle_subcollections', False)
-    # var_database = request_json.get('database', '(default)')
-    # updated_field = request_json.get('updated_field')  # Nombre del campo en Firestore
-    # full_export = request_json.get('full_export', False)
-    # page_size = request_json.get('page_size', 500)
-    # print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
 
    
     # updated_after = None
@@ -292,7 +296,6 @@ def export_firestore_to_bigquery(request):
 
     # duration = (datetime.now(timezone.utc) - start_time).total_seconds()
     # return ({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
-    #return ({'message': f'documentos cargados correctamente'}), 200
 
 
 
