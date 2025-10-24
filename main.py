@@ -295,75 +295,85 @@ def export_firestore_to_bigquery(request):
     print(f"✅ Documentos extraídos: {len(example_docs)}")
     sys.stdout.flush()
 
-    # temp_file_path = '/tmp/firestore_data.json'
-    # print('📝 Creando archivo JSON temporal...')
-    # with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
-    #     for doc in example_docs:
-    #         temp_file.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
-    # print('📝 Archivo JSON temporal creado:', temp_file_path)
+    temp_file_path = '/tmp/firestore_data.json'
+    print('📝 Creando archivo JSON temporal...')
+    sys.stdout.flush()
+    with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
+        for doc in example_docs:
+            temp_file.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
+    print('📝 Archivo JSON temporal creado:', temp_file_path)
+    sys.stdout.flush()
 
-    # # Crear esquema y tabla BigQuery
-    # fields = list(set(f.lower() for f in fields))
-    # schema = [bigquery.SchemaField(f, "STRING", mode="NULLABLE") for f in fields]
-    # table_ref = bigquery_client.dataset(var_dataset_id).table(var_table_id)
-    # bigquery_client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
+    # Crear esquema y tabla BigQuery
+    fields = list(set(f.lower() for f in fields))
+    schema = [bigquery.SchemaField(f, "STRING", mode="NULLABLE") for f in fields]
+    table_ref = bigquery_client.dataset(var_dataset_id).table(var_table_id)
+    bigquery_client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
 
-    # # -----------------------
-    # # Cargar tabla temporal
-    # # -----------------------
-    # print('📝 Creando tabla temporal...')
-    # temp_table_id = var_table_id + "_temp"
-    # temp_table_ref = bigquery_client.dataset(var_dataset_id).table(temp_table_id)
-    # bigquery_client.create_table(bigquery.Table(temp_table_ref, schema=schema), exists_ok=True)
+    # -----------------------
+    # Cargar tabla temporal
+    # -----------------------
+    print('📝 Creando tabla temporal...')
+    sys.stdout.flush()
+    temp_table_id = var_table_id + "_temp"
+    temp_table_ref = bigquery_client.dataset(var_dataset_id).table(temp_table_id)
+    bigquery_client.create_table(bigquery.Table(temp_table_ref, schema=schema), exists_ok=True)
 
-    # job_config_temp = bigquery.LoadJobConfig(
-    #     schema=schema,
-    #     source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-    #     write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-    #     autodetect=True,
-    #     max_bad_records=50
-    # )
-    # with open(temp_file_path, "rb") as source_file:
-    #     print('📝 Cargando tabla temporal...')
-    #     bigquery_client.load_table_from_file(source_file, temp_table_ref, job_config=job_config_temp).result()
+    job_config_temp = bigquery.LoadJobConfig(
+        schema=schema,
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        autodetect=True,
+        max_bad_records=50
+    )
+    with open(temp_file_path, "rb") as source_file:
+        print('📝 Cargando tabla temporal...')
+        sys.stdout.flush()
+        bigquery_client.load_table_from_file(source_file, temp_table_ref, job_config=job_config_temp).result()
 
-    # # -----------------------
-    # # MERGE / DELETE si incremental
-    # # -----------------------
-    # if not full_export:
-    #     print('📝 Merge / Delete si incremental...')
-    #     merge_sql = f"""
-    #         MERGE `{var_dataset_id}.{var_table_id}` T
-    #         USING `{var_dataset_id}.{temp_table_id}` S
-    #         ON T.id = S.id
-    #         WHEN MATCHED THEN UPDATE SET {', '.join([f'T.{f} = S.{f}' for f in fields])}
-    #         WHEN NOT MATCHED THEN INSERT ({', '.join(fields)}) VALUES ({', '.join([f'S.{f}' for f in fields])})
-    #     """
-    #     bigquery_client.query(merge_sql).result()
+    # -----------------------
+    # MERGE / DELETE si incremental
+    # -----------------------
+    if not full_export:
+        print('📝 Merge / Delete si incremental...')
+        sys.stdout.flush()
+        merge_sql = f"""
+            MERGE `{var_dataset_id}.{var_table_id}` T
+            USING `{var_dataset_id}.{temp_table_id}` S
+            ON T.id = S.id
+            WHEN MATCHED THEN UPDATE SET {', '.join([f'T.{f} = S.{f}' for f in fields])}
+            WHEN NOT MATCHED THEN INSERT ({', '.join(fields)}) VALUES ({', '.join([f'S.{f}' for f in fields])})
+        """
+        bigquery_client.query(merge_sql).result()
 
-    #     delete_sql = f"""
-    #         DELETE FROM `{var_dataset_id}.{var_table_id}`
-    #         WHERE id NOT IN (SELECT id FROM `{var_dataset_id}.{temp_table_id}`)
-    #     """
-    #     bigquery_client.query(delete_sql).result()
-    #     print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
+        delete_sql = f"""
+            DELETE FROM `{var_dataset_id}.{var_table_id}`
+            WHERE id NOT IN (SELECT id FROM `{var_dataset_id}.{temp_table_id}`)
+        """
+        bigquery_client.query(delete_sql).result()
+        print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
+        sys.stdout.flush()
 
-    # else:
-    #     print('📝 Full export: sobrescribe la tabla...')
-    #     # Full export: sobrescribe la tabla
-    #     job_config_full = bigquery.LoadJobConfig(
-    #         schema=schema,
-    #         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-    #         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-    #         autodetect=True,
-    #         max_bad_records=50
-    #     )
-    #     with open(temp_file_path, "rb") as source_file:
-    #         bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
-    #     print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
+    else:
+        print('📝 Full export: sobrescribe la tabla...')
+        sys.stdout.flush()
+        # Full export: sobrescribe la tabla
+        job_config_full = bigquery.LoadJobConfig(
+            schema=schema,
+            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            autodetect=True,
+            max_bad_records=50
+        )
+        with open(temp_file_path, "rb") as source_file:
+            bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
+        print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
+        sys.stdout.flush()
 
-    # duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-    # return ({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
+    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+    print(f"✅ Tiempo de ejecución: {duration} segundos")
+    sys.stdout.flush()
+    return ({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
 
 
 
