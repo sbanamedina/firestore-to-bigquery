@@ -75,13 +75,25 @@ def flatten_dict(d, parent_key='', sep='_', level=1, max_level=2):
 # -------------------------------
 # Procesamiento de documentos y colecciones
 # -------------------------------
-def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_level=2, handle_subcollections=False):
+def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_level=2, handle_subcollections=False, updated_after=None, updated_field=None):
     fields = set()
     example_docs = []
     doc = doc_ref.get()
     if not doc.exists:
         return example_docs, fields
     doc_data = doc.to_dict()
+
+        # Validar incremental
+    if updated_after and updated_field and updated_field in doc_data:
+        doc_value = doc_data[updated_field]
+        if isinstance(doc_value, datetime):
+            doc_dt = doc_value
+        else:
+            # Convertir a datetime si viene como string
+            doc_dt = datetime.fromisoformat(str(doc_value))
+        if doc_dt <= updated_after:
+            return example_docs, fields  # Saltar este documento
+
     doc_data['id'] = doc.id
     doc_data['document_path'] = parent_path + sep + doc.id
     flattened_data = flatten_dict(doc_data, sep=sep, max_level=max_level)
@@ -89,9 +101,18 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
     fields.update(flattened_data.keys())
     if handle_subcollections:
         for subcollection in doc_ref.collections():
-            subcollection_path = f"{parent_path}{sep}{subcollection.id}"
+            subcollection_path = f"{parent_path}{sep}{subcollection.id}" if parent_path else subcollection.id
             for sub_doc in subcollection.stream():
-                sub_docs, sub_fields = process_document(firestore_client, sub_doc.reference, subcollection_path, sep, max_level, handle_subcollections)
+                sub_docs, sub_fields = process_document(
+                    firestore_client,
+                    sub_doc.reference,
+                    parent_path=subcollection_path,
+                    sep=sep,
+                    max_level=max_level,
+                    handle_subcollections=True,
+                    updated_after=updated_after,
+                    updated_field=updated_field
+                )
                 example_docs.extend(sub_docs)
                 fields.update(sub_fields)
     return example_docs, fields
@@ -112,7 +133,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 query = query.start_after(last_doc)
             docs = list(query.stream())
             batch_docs = []
-            futures = [executor.submit(process_document, firestore_client, doc.reference, f"{collection_name}{sep}{doc.id}", sep, max_level, handle_subcollections) for doc in docs]
+            futures = [executor.submit(process_document, firestore_client, doc.reference, f"{collection_name}{sep}{doc.id}", sep, max_level, handle_subcollections, updated_after, updated_field) for doc in docs]
             for future in concurrent.futures.as_completed(futures):
                 doc_docs, doc_fields = future.result()
                 batch_docs.extend(doc_docs)
@@ -162,26 +183,28 @@ def was_recently_executed_bq(collection_name: str, database_name: str, window_mi
     client.insert_rows_json(client.dataset(dataset_id).table(table_id), [{"collection": collection_name, "database": database_name, "execution_time": now.isoformat()}])
     return False
 
-def get_last_execution_time_from_bq(collection_name: str, database_name: str) -> datetime:
-    client = bigquery.Client(project='sb-operacional-zone')
-    dataset_id = "dataops"
-    table_id = "t_firestore_log_function_locks"
-    full_table_id = f"{client.project}.{dataset_id}.{table_id}"
-    query = f"""
-        SELECT MAX(execution_time) AS last_execution
-        FROM `{full_table_id}`
-        WHERE collection = @collection AND database = @database
+def get_last_updated_field_from_bq(dataset: str, table_name: str, updated_field: str) -> datetime:
     """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("collection", "STRING", collection_name),
-            bigquery.ScalarQueryParameter("database", "STRING", database_name),
-        ]
-    )
-    result = list(client.query(query, job_config=job_config).result())
-    if result and result[0].last_execution:
-        return result[0].last_execution.replace(tzinfo=timezone.utc)
+    Devuelve el valor máximo del campo `updated_field` en la tabla BigQuery indicada.
+    """
+    client = bigquery.Client(project='sb-operacional-zone')
+    full_table_id = f"{client.project}.{dataset}.{table_name}"
+
+    query = f"""
+        SELECT MAX({updated_field}) AS last_updated
+        FROM `{full_table_id}`
+    """
+
+    result = list(client.query(query).result())
+    if result and result[0].last_updated:
+        # Retornamos como datetime con timezone UTC
+        if isinstance(result[0].last_updated, datetime):
+            return result[0].last_updated.replace(tzinfo=timezone.utc)
+        else:
+            # En caso de que venga como string
+            return datetime.fromisoformat(str(result[0].last_updated)).replace(tzinfo=timezone.utc)
     return None
+
 
 # -------------------------------
 # Función HTTP principal
@@ -206,26 +229,40 @@ def export_firestore_to_bigquery(request):
     page_size = request_json.get('page_size', 500)
     print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
     sys.stdout.flush()
-    return {"message": "test"}, 200
+    
+    # if was_recently_executed_bq(var_main_collection, var_database):
+    #     print(f"⛔ Ya se ejecutó recientemente para la colección: {var_main_collection}. Cancelando ejecución.")
+    #     sys.stdout.flush()
+    #     return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200    
 
-   
-    # updated_after = None
-    # if not full_export and updated_field:
-    #     updated_after = get_last_execution_time_from_bq(var_main_collection, var_database)
+    updated_after = None
+    if not full_export and updated_field:
+        updated_after = get_last_updated_field_from_bq(
+            dataset='firestore', 
+            table_name=var_table_id, 
+            updated_field=updated_field
+        )
+        print(f"🔹 Última fecha de actualización en BigQuery: {updated_after}")
+        sys.stdout.flush()
 
-    # # Cargar secretos y crear clientes
-    # service_account_info = json.loads(access_secret_version("sb-operacional-zone", "sb-xops-prod_appspot_gserviceaccount"))
-    # firestore_client = firestore.Client(credentials=service_account.Credentials.from_service_account_info(service_account_info), project='sb-xops-prod', database=var_database)
-    # bigquery_client = bigquery.Client(project='sb-operacional-zone')
-    # var_dataset_id = 'firestore'
 
-    # # Procesar colección
-    # print(f"🔍 Procesando colección: {var_main_collection}")
-    # example_docs, fields = process_collection(firestore_client, var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
-    # if not example_docs:
-    #     return ({'error': 'No documents found in the Firestore collection'}), 404
+    # Cargar secretos y crear clientes
+    print("🔹 Cargando secretos y creando clientes")
+    sys.stdout.flush()
+    service_account_info = json.loads(access_secret_version("sb-operacional-zone", "sb-xops-prod_appspot_gserviceaccount"))
+    firestore_client = firestore.Client(credentials=service_account.Credentials.from_service_account_info(service_account_info), project='sb-xops-prod', database=var_database)
+    bigquery_client = bigquery.Client(project='sb-operacional-zone')
+    var_dataset_id = 'firestore'
 
-    # print(f"✅ Documentos extraídos: {len(example_docs)}")
+    # Procesar colección
+    print(f"🔍 Procesando colección: {var_main_collection}")
+    sys.stdout.flush()
+    example_docs, fields = process_collection(firestore_client, var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
+    if not example_docs:
+        return ({'error': 'No documents found in the Firestore collection'}), 404
+
+    print(f"✅ Documentos extraídos: {len(example_docs)}")
+    sys.stdout.flush()
 
     # temp_file_path = '/tmp/firestore_data.json'
     # print('📝 Creando archivo JSON temporal...')
