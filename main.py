@@ -186,6 +186,7 @@ def get_last_execution_time_from_bq(collection_name: str, database_name: str) ->
 # -------------------------------
 @functions_framework.http
 def export_firestore_to_bigquery(request):
+    print("✅ Request entró a la función")
     start_time = datetime.now(timezone.utc)
     request_json = request.get_json(silent=True)
     print(f'🔹 Payload recibido: {request_json}')

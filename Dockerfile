@@ -15,3 +15,4 @@ EXPOSE 8080
 
 # Usa el functions framework para servir la función
 CMD ["functions-framework", "--target=export_firestore_to_bigquery", "--port=8080"]
+
