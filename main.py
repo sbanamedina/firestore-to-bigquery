@@ -9,7 +9,6 @@ Características principales:
 - Logging estructurado y manejo de errores.
 
 """
-
 import os
 import re
 import json
@@ -17,13 +16,12 @@ import math
 import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
-from typing import Tuple, List, Dict, Set, Optional
+from typing import Tuple, Optional
 
 import functions_framework
 from google.cloud import firestore, bigquery, storage, secretmanager
 from google.oauth2 import service_account
 import concurrent.futures
-import uuid
 
 # ---------------------------
 # CONFIG
@@ -37,7 +35,7 @@ BQ_LOCK_TABLE = os.environ.get("BQ_LOCK_TABLE", "t_firestore_log_function_locks"
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "sb-temp-exports")
 DEFAULT_PAGE_SIZE = int(os.environ.get("PAGE_SIZE", 500))
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", min(20, (os.cpu_count() or 2) * 5)))
-INCREMENTAL_FIELD = os.environ.get("INCREMENTAL_FIELD", "updated_at")  # campo en Firestore para incremental
+INCREMENTAL_FIELD = os.environ.get("INCREMENTAL_FIELD", "updated_at")
 LOCK_WINDOW_MINUTES = int(os.environ.get("LOCK_WINDOW_MINUTES", 5))
 
 # ---------------------------
@@ -49,15 +47,15 @@ logger = logging.getLogger("firestore_export")
 # ---------------------------
 # Helpers: secrets, clients
 # ---------------------------
-
 def access_secret_version(project_id: str, secret_id: str, version_id: str = "latest") -> str:
+    print(f"[DEBUG] Accessing secret {secret_id} version {version_id}")
     client = secretmanager.SecretManagerServiceClient()
     name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
     response = client.access_secret_version(request={"name": name})
     return response.payload.data.decode("UTF-8")
 
-
 def build_clients_from_secret(secret_json: str) -> Tuple[firestore.Client, bigquery.Client, storage.Client]:
+    print("[DEBUG] Building clients from service account secret")
     sa_info = json.loads(secret_json)
     creds = service_account.Credentials.from_service_account_info(sa_info)
     fs = firestore.Client(project=FIRESTORE_PROJECT, credentials=creds)
@@ -68,10 +66,8 @@ def build_clients_from_secret(secret_json: str) -> Tuple[firestore.Client, bigqu
 # ---------------------------
 # Serialization / flatten
 # ---------------------------
-
 def serialize_value(value):
     if isinstance(value, datetime):
-        # ensure UTC and ISO
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value.isoformat()
@@ -98,7 +94,6 @@ def serialize_value(value):
     except Exception:
         return str(value)
 
-
 def flatten_dict(d: dict, parent_key: str = '', sep: str = '_', level: int = 1, max_level: int = 2) -> dict:
     items = {}
     if level > max_level:
@@ -116,14 +111,14 @@ def flatten_dict(d: dict, parent_key: str = '', sep: str = '_', level: int = 1, 
     return items
 
 # ---------------------------
-# BigQuery bookkeeping: lock and checkpoints
+# BigQuery bookkeeping
 # ---------------------------
-
 def ensure_lock_table(bq_client: bigquery.Client):
     full_table = f"{bq_client.project}.{BQ_DATASET}.{BQ_LOCK_TABLE}"
     try:
         bq_client.get_table(full_table)
     except Exception:
+        print(f"[DEBUG] Lock table does not exist, creating {full_table}")
         logger.info("Lock table does not exist. Creating %s", full_table)
         schema = [
             bigquery.SchemaField("collection", "STRING", mode="REQUIRED"),
@@ -135,13 +130,11 @@ def ensure_lock_table(bq_client: bigquery.Client):
         bq_client.create_table(table)
         logger.info("Lock table created: %s", full_table)
 
-
 def was_recently_executed_bq(bq_client, collection_name, database_name, window_minutes=LOCK_WINDOW_MINUTES):
     ensure_lock_table(bq_client)
     now = datetime.utcnow().replace(tzinfo=timezone.utc)
     window_start = now - timedelta(minutes=window_minutes)
     full_table = f"{bq_client.project}.{BQ_DATASET}.{BQ_LOCK_TABLE}"
-
     query = f"""
     SELECT COUNT(*) as total
     FROM `{full_table}`
@@ -159,12 +152,9 @@ def was_recently_executed_bq(bq_client, collection_name, database_name, window_m
     res = bq_client.query(query, job_config=job_config).result()
     rows = list(res)
     total = rows[0].total if rows else 0
+    print(f"[DEBUG] Found {total} recent executions for {collection_name}.{database_name} since {window_start}")
     logger.info("Found %s recent executions for %s.%s since %s", total, collection_name, database_name, window_start)
     return total > 0
-
-# ---------------------------
-# Checkpoint management for incremental exports
-# ---------------------------
 
 def get_last_export_time(bq_client: bigquery.Client, collection_name: str) -> Optional[datetime]:
     ensure_lock_table(bq_client)
@@ -174,14 +164,13 @@ def get_last_export_time(bq_client: bigquery.Client, collection_name: str) -> Op
     )
     res = bq_client.query(query, job_config=job_config).result()
     rows = list(res)
-    if rows and rows[0].last:
-        return rows[0].last
-    return None
+    last = rows[0].last if rows and rows[0].last else None
+    print(f"[DEBUG] Last export time for {collection_name}: {last}")
+    return last
 
 # ---------------------------
 # Firestore processing
 # ---------------------------
-
 def process_document(
     doc_snapshot,
     parent_path: str = '',
@@ -193,28 +182,28 @@ def process_document(
     incremental_field: Optional[str] = None,
     last_export: Optional[datetime] = None
 ):
-    """
-    Procesa un documento de Firestore, aplana sus campos y opcionalmente procesa subcollections.
-    Permite filtrado incremental en subcollections si se proporciona `incremental_field` y `last_export`.
-    """
     try:
         doc_data = doc_snapshot.to_dict() or {}
         doc_data['id'] = doc_snapshot.id
         doc_data['document_path'] = f"{parent_path}{sep}{doc_snapshot.id}" if parent_path else doc_snapshot.id
 
-        # Flatten principal
+        print(f"[DEBUG] Processing document: {doc_data['document_path']}")
+        logger.info("Processing document: %s", doc_data['document_path'])
+
         flattened = flatten_dict(doc_data, parent_key='', sep=sep, max_level=max_level)
         results = [flattened]
         fields = set(flattened.keys())
 
-        # Procesar subcollections
-        if handle_subcollections and subcollection_level < max_subcollection_level:
+        if handle_subcollections:
+            print(f"[DEBUG] Checking subcollections for: {doc_data['document_path']}")
             for subcol in doc_snapshot.reference.collections():
+                print(f"[DEBUG] Found subcollection: {subcol.id}")
                 for subdoc in subcol.stream():
-                    # Filtrado incremental en subcollection
                     if incremental_field and last_export:
                         val = subdoc.get(incremental_field)
+                        print(f"[DEBUG] Subdoc {subdoc.id} {incremental_field}={val}")
                         if val and val <= last_export:
+                            print(f"[DEBUG] Skipping subdoc {subdoc.id} due to incremental filter")
                             continue
                     sub_results, sub_fields = process_document(
                         subdoc,
@@ -231,9 +220,9 @@ def process_document(
                     fields.update(sub_fields)
         return results, fields
     except Exception as e:
+        print(f"[ERROR] Error processing document {doc_snapshot.id}: {e}")
         logger.exception("Error processing document %s: %s", doc_snapshot.id, e)
         return [], set()
-
 
 def process_collection(
     firestore_client: firestore.Client,
@@ -247,6 +236,7 @@ def process_collection(
     incremental_field=INCREMENTAL_FIELD,
     last_export: Optional[datetime] = None  
 ):
+    print(f"[DEBUG] Starting collection processing: {collection_name}, full_export={full_export}")
     fields = set()
     example_docs = []
     collection_ref = firestore_client.collection(collection_name)
@@ -267,6 +257,7 @@ def process_collection(
                 docs = list(q.stream())
 
             if not docs:
+                print(f"[DEBUG] No documents fetched in this batch for collection {collection_name}")
                 break
 
             futures = [
@@ -293,16 +284,16 @@ def process_collection(
                 if len(docs) < page_size:
                     break
             else:
-                # Full export procesado
                 break
 
+    print(f"[DEBUG] Total docs processed in collection {collection_name}: {len(example_docs)}")
     return example_docs, fields
 
 # ---------------------------
 # GCS helpers
 # ---------------------------
-
 def upload_ndjson_to_gcs(gcs_client: storage.Client, bucket_name: str, local_path: str, gcs_path: str):
+    print(f"[DEBUG] Uploading {local_path} to gs://{bucket_name}/{gcs_path}")
     bucket = gcs_client.bucket(bucket_name)
     blob = bucket.blob(gcs_path)
     blob.upload_from_filename(local_path)
@@ -310,12 +301,12 @@ def upload_ndjson_to_gcs(gcs_client: storage.Client, bucket_name: str, local_pat
     return f"gs://{bucket_name}/{gcs_path}"
 
 # ---------------------------
-# Entrypoint (Cloud Function)
+# Entrypoint
 # ---------------------------
-
 @functions_framework.http
 def export_firestore_to_bigquery(request):
     start_time = datetime.now(timezone.utc)
+    print(f"[DEBUG] Function started at {start_time}")
     logger.info("Function started")
 
     request_json = request.get_json(silent=True) or {}
@@ -333,26 +324,18 @@ def export_firestore_to_bigquery(request):
     bq_client = None
 
     try:
-        # 🔑 Obtener clientes
         secret = access_secret_version(PROJECT_SECRETS_PROJECT, CREDENTIAL_SECRET_ID)
         fs_client, bq_client, gcs_client = build_clients_from_secret(secret)
 
-        # -------------------------
-        # Bloqueo inicial
-        # -------------------------
         ensure_lock_table(bq_client)
         if was_recently_executed_bq(bq_client, collection, database, window_minutes=LOCK_WINDOW_MINUTES):
-            logger.info("Duplicate execution detected. Skipping for collection %s", collection)
+            print(f"[DEBUG] Duplicate execution detected, skipping {collection}")
             return ({'warning': 'Duplicate execution; skipping'}, 200)
 
-        # Insertar registro "in progress" para evitar reintentos concurrentes
         lock_table = f"{bq_client.project}.{BQ_DATASET}.{BQ_LOCK_TABLE}"
         meta = json.dumps({"started_at": start_time.isoformat(), "status": "in_progress"})
         bq_client.insert_rows_json(lock_table, [{"collection": collection, "database": database, "execution_time": start_time.isoformat(), "meta": meta}])
 
-        # -------------------------
-        # Determinar export incremental
-        # -------------------------
         query = None
         last_export = None
         if not full_export:
@@ -363,9 +346,6 @@ def export_firestore_to_bigquery(request):
                     .order_by(INCREMENTAL_FIELD)\
                     .limit(page_size)
 
-        # -------------------------
-        # Procesar colección
-        # -------------------------
         docs, fields = process_collection(
             fs_client,
             collection,
@@ -380,28 +360,20 @@ def export_firestore_to_bigquery(request):
         )
 
         if not docs:
-            logger.info("No documents to export for %s", collection)
+            print(f"[DEBUG] No documents to export for {collection}")
             success = True
             return ({'message': 'No documents found'}, 200)
 
-        # -------------------------
-        # Guardar NDJSON temporal
-        # -------------------------
         tmp_path = f"/tmp/{collection}_export_{start_time.strftime('%Y%m%dT%H%M%SZ')}.ndjson"
         with open(tmp_path, 'w', encoding='utf-8') as f:
             for doc in docs:
                 json.dump({k: serialize_value(v) for k, v in doc.items()}, f, ensure_ascii=False)
                 f.write('\n')
 
-        # -------------------------
-        # Subir a GCS
-        # -------------------------
         gcs_path = f"firestore_exports/{collection}/{os.path.basename(tmp_path)}"
         uri = upload_ndjson_to_gcs(gcs_client, GCS_BUCKET, tmp_path, gcs_path)
 
-        # -------------------------
-        # Cargar en BigQuery
-        # -------------------------
+        print(f"[DEBUG] Loading data into BigQuery table {table}")
         dataset_ref = bigquery.DatasetReference(BQ_PROJECT, BQ_DATASET)
         table_ref = dataset_ref.table(table)
         job_config = bigquery.LoadJobConfig(
@@ -412,20 +384,18 @@ def export_firestore_to_bigquery(request):
         )
         load_job = bq_client.load_table_from_uri(uri, table_ref, job_config=job_config)
         load_job.result()
-        logger.info("BigQuery load job completed")
+        print("[DEBUG] BigQuery load job completed")
         success = True
 
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
         return ({'message': f'Loaded {len(docs)} documents into {table}', 'duration_seconds': duration}, 200)
 
     except Exception as e:
+        print(f"[ERROR] Unhandled error: {e}")
         logger.exception("Unhandled error: %s", e)
         return ({'error': str(e)}, 500)
 
     finally:
-        # -------------------------
-        # Actualizar lock final
-        # -------------------------
         if bq_client:
             try:
                 meta = json.dumps({
@@ -435,4 +405,5 @@ def export_firestore_to_bigquery(request):
                 })
                 bq_client.insert_rows_json(lock_table, [{"collection": collection, "database": database, "execution_time": start_time.isoformat(), "meta": meta}])
             except Exception as e:
+                print(f"[WARNING] Could not update lock table final status: {e}")
                 logger.warning("Could not update lock table final status: %s", e)
