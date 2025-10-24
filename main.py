@@ -23,6 +23,7 @@ import functions_framework
 from google.cloud import firestore, bigquery, storage, secretmanager
 from google.oauth2 import service_account
 import concurrent.futures
+import uuid
 
 # ---------------------------
 # CONFIG
@@ -135,11 +136,12 @@ def ensure_lock_table(bq_client: bigquery.Client):
         logger.info("Lock table created: %s", full_table)
 
 
-def was_recently_executed_bq(bq_client: bigquery.Client, collection_name: str, database_name: str, window_minutes: int = LOCK_WINDOW_MINUTES) -> bool:
+def was_recently_executed_bq(bq_client, collection_name, database_name, window_minutes=LOCK_WINDOW_MINUTES):
     ensure_lock_table(bq_client)
     now = datetime.utcnow().replace(tzinfo=timezone.utc)
     window_start = now - timedelta(minutes=window_minutes)
     full_table = f"{bq_client.project}.{BQ_DATASET}.{BQ_LOCK_TABLE}"
+
     query = f"""
     SELECT COUNT(*) as total
     FROM `{full_table}`
@@ -158,20 +160,7 @@ def was_recently_executed_bq(bq_client: bigquery.Client, collection_name: str, d
     rows = list(res)
     total = rows[0].total if rows else 0
     logger.info("Found %s recent executions for %s.%s since %s", total, collection_name, database_name, window_start)
-    if total > 0:
-        return True
-    # Insert lock row
-    table_ref = f"{bq_client.project}.{BQ_DATASET}.{BQ_LOCK_TABLE}"
-    rows_to_insert = [{
-        "collection": collection_name,
-        "database": database_name,
-        "execution_time": now.isoformat(),
-        "meta": json.dumps({"started_at": now.isoformat()})
-    }]
-    errors = bq_client.insert_rows_json(table_ref, rows_to_insert)
-    if errors:
-        logger.warning("Errors inserting lock row: %s", errors)
-    return False
+    return total > 0
 
 # ---------------------------
 # Checkpoint management for incremental exports
