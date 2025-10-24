@@ -1,0 +1,30 @@
+# cloudbuild.yaml
+steps:
+  # 1️⃣ Construir la imagen Docker
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t',
+      'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-db-to-bigquery-optimized:latest',
+      '.'
+    ]
+
+  # 2️⃣ Subir la imagen a Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'push',
+      'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-db-to-bigquery-optimized:latest'
+    ]
+
+  # 3️⃣ Desplegar a Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args: [
+      'run', 'deploy', 'firestore-db-to-bigquery-optimized',
+      '--image', 'us-east1-docker.pkg.dev/sb-operacional-zone/cloud-run-source-deploy/firestore-db-to-bigquery-optimized:latest',
+      '--region', 'us-east1',
+      '--platform', 'managed',
+      '--allow-unauthenticated'
+    ]
+
+
