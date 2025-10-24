@@ -179,7 +179,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
 # -------------------------------
 # Control de ejecución duplicada en BigQuery
 # -------------------------------
-def was_recently_executed_bq(collection_name: str, database_name: str, window_minutes: int = 30) -> bool:
+def was_recently_executed_bq(collection_name: str, database_name: str, window_minutes: int = 5) -> bool:
     client = bigquery.Client(project='sb-operacional-zone')
     dataset_id = "dataops"
     table_id = "t_firestore_log_function_locks"
@@ -261,10 +261,10 @@ def export_firestore_to_bigquery(request):
     print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
     sys.stdout.flush()
     
-    # if was_recently_executed_bq(var_main_collection, var_database):
-    #     print(f"⛔ Ya se ejecutó recientemente para la colección: {var_main_collection}. Cancelando ejecución.")
-    #     sys.stdout.flush()
-    #     return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200    
+    if was_recently_executed_bq(var_main_collection, var_database):
+        print(f"⛔ Ya se ejecutó recientemente para la colección: {var_main_collection}. Cancelando ejecución.")
+        sys.stdout.flush()
+        return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200    
 
     updated_after = None
     if not full_export and updated_field:
@@ -411,7 +411,7 @@ def export_firestore_to_bigquery(request):
     duration = (datetime.now(timezone.utc) - start_time).total_seconds()
     print(f"✅ Tiempo de ejecución: {duration} segundos")
     sys.stdout.flush()
-    
+
     return ({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
 
 
