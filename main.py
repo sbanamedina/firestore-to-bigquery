@@ -8,7 +8,6 @@ from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 
 import functions_framework
-from flask import jsonify
 from google.cloud import firestore, bigquery, secretmanager
 from google.oauth2 import service_account
 
@@ -192,7 +191,7 @@ def export_firestore_to_bigquery(request):
     print(f'🔹 Payload recibido: {request_json}')
 
     if not request_json or 'collection' not in request_json or 'table' not in request_json:
-        return jsonify({'error': 'Missing collection or table parameter in request'}), 400
+        return ({'error': 'Missing collection or table parameter in request'}), 400
 
     var_main_collection = request_json['collection']
     var_table_id = request_json['table']
@@ -209,7 +208,7 @@ def export_firestore_to_bigquery(request):
     # Lock temporal
     lock_file_path = f"/tmp/lock_{var_main_collection}_{start_time.strftime('%Y-%m-%d %H:%M')}.txt"
     if os.path.exists(lock_file_path):
-        return jsonify({'warning': 'Execution skipped to avoid duplicate run'}), 429
+        return ({'warning': 'Execution skipped to avoid duplicate run'}), 429
     with open(lock_file_path, "w") as lock_file:
         lock_file.write("lock")
     
@@ -227,7 +226,7 @@ def export_firestore_to_bigquery(request):
     print(f"🔍 Procesando colección: {var_main_collection}")
     example_docs, fields = process_collection(firestore_client, var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
     if not example_docs:
-        return jsonify({'error': 'No documents found in the Firestore collection'}), 404
+        return ({'error': 'No documents found in the Firestore collection'}), 404
 
     print(f"✅ Documentos extraídos: {len(example_docs)}")
 
@@ -306,7 +305,7 @@ def export_firestore_to_bigquery(request):
         print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
 
     duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-    return jsonify({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
+    return ({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
 
 
 
