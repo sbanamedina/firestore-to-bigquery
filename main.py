@@ -317,6 +317,22 @@ def export_firestore_to_bigquery(request):
                     query = None
             else:
                 logger.info("No checkpoint found for %s; running full export.", collection)
+        
+        # --- Debug Firestore Connection ---
+        logger.info("🔍 Verificando conexión a Firestore...")
+        logger.info("Firestore project configurado: %s", FIRESTORE_PROJECT)
+        logger.info("Database usada (solo informativo): %s", database)
+        logger.info("Colección solicitada: %s", collection)
+
+        try:
+            test_collection = fs_client.collection(collection)
+            test_docs = list(test_collection.limit(3).stream())
+            logger.info("✅ Firestore accesible. Primeros %d documentos detectados en '%s'.", len(test_docs), collection)
+            for doc in test_docs:
+                logger.info("   • Documento ID: %s", doc.id)
+        except Exception as e:
+            logger.exception("❌ Error accediendo a la colección %s: %s", collection, e)
+
 
         # Process collection
         docs, fields = process_collection(
