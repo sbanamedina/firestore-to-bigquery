@@ -344,13 +344,51 @@ def export_firestore_to_bigquery(request):
             WHEN MATCHED THEN UPDATE SET {', '.join([f'T.{f} = S.{f}' for f in fields])}
             WHEN NOT MATCHED THEN INSERT ({', '.join(fields)}) VALUES ({', '.join([f'S.{f}' for f in fields])})
         """
-        bigquery_client.query(merge_sql).result()
+        merge_job = bigquery_client.query(merge_sql)
+        merge_result = merge_job.result()
+        print(f"✅ Merge completado: {merge_result.num_dml_affected_rows} filas afectadas (insert/update)")
+        sys.stdout.flush()
+
+        print("📝 Obteniendo todos los IDs actuales de Firestore para manejar eliminados...")
+        all_ids = []
+        for doc in firestore_client.collection(var_main_collection).stream():
+            all_ids.append({'id': doc.id})
+
+        # Crear tabla temporal de IDs
+        all_ids_table_id = var_table_id + "_all_ids_temp"
+        all_ids_table_ref = bigquery_client.dataset(var_dataset_id).table(all_ids_table_id)
+        schema_ids = [bigquery.SchemaField("id", "STRING", mode="REQUIRED")]
+        bigquery_client.create_table(bigquery.Table(all_ids_table_ref, schema=schema_ids), exists_ok=True)
+
+        # Guardar IDs en archivo temporal JSONL
+        temp_ids_path = '/tmp/all_ids.json'
+        with open(temp_ids_path, 'w', encoding='utf-8') as f:
+            for row in all_ids:
+                f.write(json.dumps(row, ensure_ascii=False) + '\n')
+
+        # Cargar en BigQuery sobrescribiendo la tabla
+        job_config = bigquery.LoadJobConfig(
+            schema=schema_ids,
+            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+        )
+        with open(temp_ids_path, "rb") as source_file:
+            bigquery_client.load_table_from_file(source_file, all_ids_table_ref, job_config=job_config).result()
+
+        print(f"✅ IDs actuales de Firestore cargados en la tabla {all_ids_table_id} en BigQuery (full refresh)")
+        sys.stdout.flush()
+
 
         delete_sql = f"""
-            DELETE FROM `{var_dataset_id}.{var_table_id}`
-            WHERE id NOT IN (SELECT id FROM `{var_dataset_id}.{temp_table_id}`)
+        DELETE FROM `{var_dataset_id}.{var_table_id}`
+        WHERE id NOT IN (SELECT id FROM `{var_dataset_id}.{all_ids_table_id}`)
         """
-        bigquery_client.query(delete_sql).result()
+        delete_job = bigquery_client.query(delete_sql)
+        delete_result = delete_job.result()
+        print(f"✅ Delete completado: {delete_result.num_dml_affected_rows} filas eliminadas")
+        sys.stdout.flush()
+
+
         print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
         sys.stdout.flush()
 
