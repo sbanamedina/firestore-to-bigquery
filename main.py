@@ -411,6 +411,7 @@ def export_firestore_to_bigquery(request):
     duration = (datetime.now(timezone.utc) - start_time).total_seconds()
     print(f"✅ Tiempo de ejecución: {duration} segundos")
     sys.stdout.flush()
+    
     return ({'message': f'{len(example_docs)} documentos cargados en {var_table_id}.', 'duration_seconds': round(duration, 2)}), 200
 
 
