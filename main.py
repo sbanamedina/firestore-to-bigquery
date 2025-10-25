@@ -96,7 +96,23 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
     # Validar incremental
     if updated_after and updated_field and updated_field in doc_data:
         doc_value = doc_data[updated_field]
-        doc_dt = doc_value if isinstance(doc_value, datetime) else datetime.fromisoformat(str(doc_value))
+
+        # Convertir valor a datetime si es string
+        if isinstance(doc_value, datetime):
+            doc_dt = doc_value
+        else:
+            try:
+                doc_dt = datetime.fromisoformat(str(doc_value))
+            except ValueError:
+                print(f"⚠️ No se pudo convertir {doc_value} a datetime, se omite comparación.")
+                return example_docs, fields
+
+        # Normalizar zonas horarias
+        if doc_dt.tzinfo is None:
+            doc_dt = doc_dt.replace(tzinfo=timezone.utc)
+        if updated_after.tzinfo is None:
+            updated_after = updated_after.replace(tzinfo=timezone.utc)
+
         if doc_dt <= updated_after:
             return example_docs, fields
 
