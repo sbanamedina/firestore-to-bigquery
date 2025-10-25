@@ -135,12 +135,20 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     collection_ref = firestore_client.collection(collection_name)
     last_doc = None
 
-    # Ajuste de where + order_by
     if updated_after and updated_field:
-        collection_ref = collection_ref.where(updated_field, ">", updated_after)
-        collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
-    else:
-        collection_ref = collection_ref.order_by("__name__")
+        try:
+            # Prueba primero como timestamp (nativo)
+            collection_ref = collection_ref.where(updated_field, ">", updated_after)
+            collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
+            print(f"🧭 Filtro aplicado como TIMESTAMP: {updated_field} > {updated_after}")
+            sys.stdout.flush()
+        except Exception as e:
+            # Si falla (por tipo string), usa comparación de texto
+            updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
+            collection_ref = collection_ref.where(updated_field, ">", updated_after_str)
+            collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
+            print(f"🧭 Filtro aplicado como STRING: {updated_field} > '{updated_after_str}'")
+            sys.stdout.flush()
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         while True:
@@ -291,6 +299,8 @@ def export_firestore_to_bigquery(request):
     sys.stdout.flush()
     example_docs, fields = process_collection(firestore_client, var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
     if not example_docs:
+        print(f"⛔ No se encontraron documentos en la colección: {var_main_collection}")
+        sys.stdout.flush()
         return ({'error': 'No documents found in the Firestore collection'}), 404
 
     print(f"✅ Documentos extraídos: {len(example_docs)}")
