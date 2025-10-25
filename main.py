@@ -200,6 +200,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 print(f"🧭 Filtro aplicado como TIMESTAMP: {updated_field} > {updated_after}")
                 sys.stdout.flush()
                 collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
+                collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
 
             # Si el campo es string (formato de fecha), lo filtramos como string
             else:
@@ -207,6 +208,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 print(f"🧭 Filtro aplicado como STRING: {updated_field} > '{updated_after_str}'")
                 sys.stdout.flush()
                 collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
+                collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
 
             # Ordenamos siempre
             collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
