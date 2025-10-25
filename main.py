@@ -137,18 +137,31 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
 
     if updated_after and updated_field:
         try:
-            # Prueba primero como timestamp (nativo)
-            collection_ref = collection_ref.where(updated_field, ">", updated_after)
+            # Obtenemos un documento de ejemplo para detectar tipo de dato
+            sample_doc = next(firestore_client.collection(collection_name).limit(1).stream(), None)
+            if sample_doc and updated_field in sample_doc.to_dict():
+                sample_value = sample_doc.to_dict()[updated_field]
+            else:
+                sample_value = None
+
+            # Si el campo es timestamp Firestore, aplicamos filtro tipo datetime
+            if isinstance(sample_value, datetime):
+                print(f"🧭 Filtro aplicado como TIMESTAMP: {updated_field} > {updated_after}")
+                sys.stdout.flush()
+                collection_ref = collection_ref.where(updated_field, ">", updated_after)
+
+            # Si el campo es string (formato de fecha), lo filtramos como string
+            else:
+                updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
+                print(f"🧭 Filtro aplicado como STRING: {updated_field} > '{updated_after_str}'")
+                sys.stdout.flush()
+                collection_ref = collection_ref.where(updated_field, ">", updated_after_str)
+
+            # Ordenamos siempre
             collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
-            print(f"🧭 Filtro aplicado como TIMESTAMP: {updated_field} > {updated_after}")
-            sys.stdout.flush()
+
         except Exception as e:
-            # Si falla (por tipo string), usa comparación de texto
-            updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
-            collection_ref = collection_ref.where(updated_field, ">", updated_after_str)
-            collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
-            print(f"🧭 Filtro aplicado como STRING: {updated_field} > '{updated_after_str}'")
-            sys.stdout.flush()
+            print(f"⚠️ No se pudo determinar tipo de {updated_field}. Filtro omitido: {e}")
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         while True:
