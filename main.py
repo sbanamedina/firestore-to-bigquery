@@ -369,10 +369,10 @@ def export_firestore_to_bigquery(request):
     print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
     sys.stdout.flush()
     
-    # if was_recently_executed_bq(var_main_collection, var_database):
-    #     print(f"⛔ Ya se ejecutó recientemente para la colección: {var_main_collection}. Cancelando ejecución.")
-    #     sys.stdout.flush()
-    #     return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200    
+    if was_recently_executed_bq(var_main_collection, var_database):
+        print(f"⛔ Ya se ejecutó recientemente para la colección: {var_main_collection}. Cancelando ejecución.")
+        sys.stdout.flush()
+        return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200    
 
     updated_after = None
     if not full_export and updated_field:
@@ -405,15 +405,33 @@ def export_firestore_to_bigquery(request):
     print(f"✅ Documentos extraídos: {len(example_docs)}")
     sys.stdout.flush()
 
-    temp_file_path = '/tmp/firestore_data.json'
     print('📝 Creando archivo JSON temporal...')
     sys.stdout.flush()
+
+    temp_file_path = '/tmp/firestore_data.json'
     with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
         for doc in example_docs:
-            #temp_file.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
-            json.dump([ {k: serialize_value(v) for k, v in doc.items()} for doc in example_docs ], temp_file, ensure_ascii=False)
+            json_line = json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False)
+            temp_file.write(json_line + '\n')
+
     print('📝 Archivo JSON temporal creado:', temp_file_path)
     sys.stdout.flush()
+
+    # Verificación opcional de formato NDJSON (solo logs)
+    try:
+        with open(temp_file_path, 'r', encoding='utf-8') as check_file:
+            first_line = check_file.readline().strip()
+            if first_line:
+                json.loads(first_line)
+                print("✅ Archivo NDJSON válido (BigQuery podrá leerlo).")
+                sys.stdout.flush()
+            else:
+                print("⚠️ Archivo NDJSON vacío.")
+                sys.stdout.flush()
+    except Exception as e:
+        print(f"⚠️ Error validando NDJSON: {e}")
+    sys.stdout.flush()
+
 
     # Crear esquema y tabla BigQuery
     fields = list(set(f.lower() for f in fields))
