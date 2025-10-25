@@ -14,7 +14,23 @@ import sys
 import logging
 from google.api_core.retry import Retry
 from google.api_core.exceptions import GoogleAPICallError
+import time
+from google.api_core.exceptions import ServiceUnavailable, DeadlineExceeded, GoogleAPICallError, RetryError
+from google.cloud.firestore_v1.base_query import FieldFilter
 
+
+def safe_stream(query, max_attempts=5, base_backoff=1.0):
+    """Ejecuta un query Firestore con reintento y backoff exponencial."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return list(query.stream())
+
+        except (ServiceUnavailable, DeadlineExceeded, GoogleAPICallError) as e:
+            backoff = base_backoff * (2 ** (attempt - 1))
+            print(f"⚠️ safe_stream: intento {attempt}/{max_attempts} falló ({e}). Reintentando en {backoff}s...")
+            sys.stdout.flush()
+            time.sleep(backoff)
+    raise RuntimeError("❌ safe_stream: todos los intentos fallaron")
 # -------------------------------
 # Acceso a secretos
 # -------------------------------
@@ -123,11 +139,29 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
     fields.update(flattened_data.keys())
 
     if handle_subcollections:
-        try:
+        #try:
             # Usar retry con deadline extendido
-            for subcollection in doc_ref.collections(retry=Retry(deadline=300)):
+        #     for subcollection in doc_ref.collections(retry=Retry(deadline=300)):
+        #         subcollection_path = f"{parent_path}{sep}{subcollection.id}" if parent_path else subcollection.id
+        #         for sub_doc in subcollection.stream():
+        #             sub_docs, sub_fields = process_document(
+        #                 firestore_client,
+        #                 sub_doc.reference,
+        #                 parent_path=subcollection_path,
+        #                 sep=sep,
+        #                 max_level=max_level,
+        #                 handle_subcollections=True,
+        #                 updated_after=updated_after,
+        #                 updated_field=updated_field
+        #             )
+        #             example_docs.extend(sub_docs)
+        #             fields.update(sub_fields)
+        # except GoogleAPICallError as e:
+        #     print(f"⚠️ Error al listar subcollections de {doc_ref.path}: {e}")
+        try:
+            for subcollection in doc_ref.collections():
                 subcollection_path = f"{parent_path}{sep}{subcollection.id}" if parent_path else subcollection.id
-                for sub_doc in subcollection.stream():
+                for sub_doc in safe_stream(subcollection): 
                     sub_docs, sub_fields = process_document(
                         firestore_client,
                         sub_doc.reference,
@@ -140,8 +174,9 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
                     )
                     example_docs.extend(sub_docs)
                     fields.update(sub_fields)
-        except GoogleAPICallError as e:
+        except Exception as e:
             print(f"⚠️ Error al listar subcollections de {doc_ref.path}: {e}")
+            sys.stdout.flush()
 
     return example_docs, fields
 
@@ -164,14 +199,14 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
             if isinstance(sample_value, datetime):
                 print(f"🧭 Filtro aplicado como TIMESTAMP: {updated_field} > {updated_after}")
                 sys.stdout.flush()
-                collection_ref = collection_ref.where(updated_field, ">", updated_after)
+                collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
 
             # Si el campo es string (formato de fecha), lo filtramos como string
             else:
                 updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
                 print(f"🧭 Filtro aplicado como STRING: {updated_field} > '{updated_after_str}'")
                 sys.stdout.flush()
-                collection_ref = collection_ref.where(updated_field, ">", updated_after_str)
+                collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
 
             # Ordenamos siempre
             collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
@@ -184,7 +219,8 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
             query = collection_ref.limit(page_size)  # <- No volver a order_by
             if last_doc:
                 query = query.start_after(last_doc)
-            docs = list(query.stream())
+            #docs = list(query.stream())
+            docs = safe_stream(query)
             batch_docs = []
             futures = [
                 executor.submit(
@@ -274,6 +310,37 @@ def get_last_updated_field_from_bq(dataset: str, table_name: str, updated_field:
             return datetime.fromisoformat(str(result[0].last_updated)).replace(tzinfo=timezone.utc)
     return None
 
+def get_all_ids_paged(collection_ref, page_size=500, max_attempts=5, base_backoff=1.0):
+    all_ids = []
+    last_doc = None
+    attempt = 0
+
+    while True:
+        try:
+            attempt = 0
+            q = collection_ref.limit(page_size)
+            if last_doc:
+                q = q.start_after(last_doc)
+            docs = list(q.stream())  
+            if not docs:
+                break
+            for d in docs:
+                all_ids.append({'id': d.id})
+            last_doc = docs[-1]
+            if len(docs) < page_size:
+                break
+        except (ServiceUnavailable, DeadlineExceeded, GoogleAPICallError) as e:
+            attempt += 1
+            if attempt > max_attempts:
+                print(f"❌ get_all_ids_paged: max attempts reached: {e}")
+                sys.stdout.flush()
+                raise
+            backoff = base_backoff * (2 ** (attempt - 1))
+            print(f"⚠️ get_all_ids_paged: excepción {e}. Reintentando en {backoff}s (intento {attempt}/{max_attempts})")
+            sys.stdout.flush()
+            time.sleep(backoff)
+            continue
+    return all_ids
 
 # -------------------------------
 # Función HTTP principal
@@ -389,10 +456,12 @@ def export_firestore_to_bigquery(request):
         print(f"✅ Merge completado: {merge_result.num_dml_affected_rows} filas afectadas (insert/update)")
         sys.stdout.flush()
 
-        print("📝 Obteniendo todos los IDs actuales de Firestore para manejar eliminados...")
-        all_ids = []
-        for doc in firestore_client.collection(var_main_collection).stream():
-            all_ids.append({'id': doc.id})
+        print("📝 Obteniendo todos los IDs actuales de Firestore para manejar eliminados (paginado)...")
+        sys.stdout.flush()
+        collection_ref = firestore_client.collection(var_main_collection)
+        all_ids = get_all_ids_paged(collection_ref, page_size=page_size)
+        print(f"✅ IDs obtenidos: {len(all_ids)}")
+        sys.stdout.flush()
 
         # Crear tabla temporal de IDs
         all_ids_table_id = var_table_id + "_all_ids_temp"
