@@ -299,10 +299,10 @@ def export_firestore_to_bigquery(request):
     print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
     sys.stdout.flush()
     
-    # if was_recently_executed_bq(var_main_collection, var_database):
-    #     print(f"⛔ Ya se ejecutó recientemente para la colección: {var_main_collection}. Cancelando ejecución.")
-    #     sys.stdout.flush()
-    #     return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200    
+    if was_recently_executed_bq(var_main_collection, var_database):
+        print(f"⛔ Ya se ejecutó recientemente para la colección: {var_main_collection}. Cancelando ejecución.")
+        sys.stdout.flush()
+        return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200    
 
     updated_after = None
     if not full_export and updated_field:
