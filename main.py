@@ -194,7 +194,8 @@ def was_recently_executed_bq(collection_name: str, database_name: str, window_mi
         ]
         client.create_table(bigquery.Table(full_table_id, schema=schema))
     now = datetime.utcnow().replace(tzinfo=timezone.utc)
-    window_start = now - timedelta(minutes=window_minutes)
+    #window_start = now - timedelta(minutes=window_minutes)
+    window_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     query = f"""
         SELECT COUNT(*) as total
         FROM `{full_table_id}`
