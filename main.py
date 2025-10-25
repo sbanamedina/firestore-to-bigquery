@@ -400,7 +400,7 @@ def export_firestore_to_bigquery(request):
     if not example_docs:
         print(f"⛔ No se encontraron documentos en la colección: {var_main_collection}")
         sys.stdout.flush()
-        return ({'error': 'No documents found in the Firestore collection'}), 404
+        return ({'error': 'No documents found in the Firestore collection'}), 200
 
     print(f"✅ Documentos extraídos: {len(example_docs)}")
     sys.stdout.flush()
