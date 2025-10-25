@@ -189,9 +189,10 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     if updated_after and updated_field:
         try:
             # Obtenemos un documento de ejemplo para detectar tipo de dato
-            sample_doc = next(firestore_client.collection(collection_name).limit(1).stream(), None)
-            if sample_doc and updated_field in sample_doc.to_dict():
-                sample_value = sample_doc.to_dict()[updated_field]
+            for d in firestore_client.collection(collection_name).limit(10).stream():
+                if updated_field in d.to_dict():
+                    sample_value = d.to_dict()[updated_field]
+                    break
             else:
                 sample_value = None
 
@@ -200,18 +201,18 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 print(f"🧭 Filtro aplicado como TIMESTAMP: {updated_field} > {updated_after}")
                 sys.stdout.flush()
                 collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
+                
+                # Para campos tipo Timestamp, sí podemos ordenar por ambos
                 collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
 
-            # Si el campo es string (formato de fecha), lo filtramos como string
             else:
                 updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
                 print(f"🧭 Filtro aplicado como STRING: {updated_field} > '{updated_after_str}'")
                 sys.stdout.flush()
                 collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
-                collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
-
-            # Ordenamos siempre
-            collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
+                
+                # Evitar order_by("__name__") en campos string para prevenir error 400
+                collection_ref = collection_ref.order_by(updated_field)
 
         except Exception as e:
             print(f"⚠️ No se pudo determinar tipo de {updated_field}. Filtro omitido: {e}")
@@ -368,10 +369,10 @@ def export_firestore_to_bigquery(request):
     print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
     sys.stdout.flush()
     
-    if was_recently_executed_bq(var_main_collection, var_database):
-        print(f"⛔ Ya se ejecutó recientemente para la colección: {var_main_collection}. Cancelando ejecución.")
-        sys.stdout.flush()
-        return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200    
+    # if was_recently_executed_bq(var_main_collection, var_database):
+    #     print(f"⛔ Ya se ejecutó recientemente para la colección: {var_main_collection}. Cancelando ejecución.")
+    #     sys.stdout.flush()
+    #     return f"Duplicate execution for collection {var_main_collection}. Skipping.", 200    
 
     updated_after = None
     if not full_export and updated_field:
@@ -409,7 +410,8 @@ def export_firestore_to_bigquery(request):
     sys.stdout.flush()
     with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
         for doc in example_docs:
-            temp_file.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
+            #temp_file.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
+            json.dump([ {k: serialize_value(v) for k, v in doc.items()} for doc in example_docs ], temp_file, ensure_ascii=False)
     print('📝 Archivo JSON temporal creado:', temp_file_path)
     sys.stdout.flush()
 
