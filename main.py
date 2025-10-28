@@ -243,11 +243,15 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 doc_docs, doc_fields = future.result()
                 batch_docs.extend(doc_docs)
                 fields.update(doc_fields)
-                
+
             total_docs = len(example_docs) + len(batch_docs)
             batch_num = math.ceil(total_docs / page_size)
-            print(f"📦 Lote #{batch_num} completado → {len(batch_docs)} docs procesados | Total acumulado: {total_docs}")
-            sys.stdout.flush()
+
+            # Imprimir cada 500 documentos procesados
+            if total_docs % 500 == 0 or len(docs) < page_size:
+                print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
+                sys.stdout.flush()
+
             if docs:
                 last_doc = docs[-1]
             example_docs.extend(batch_docs)
