@@ -180,19 +180,18 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
 
     return example_docs, fields
 
-def process_collection(firestore_client, collection_name, sep='_', max_level=2, page_size=500, handle_subcollections=False, updated_after=None, updated_field=None):
+#def process_collection(firestore_client, collection_name, sep='_', max_level=2, page_size=500, handle_subcollections=False, updated_after=None, updated_field=None):
 # Para colecciones que se bloquean
-#def process_collection(firestore_client,bigquery_client, var_dataset_id, var_table_id, collection_name, sep='_', max_level=2, page_size=500, handle_subcollections=False, updated_after=None, updated_field=None):
+def process_collection(firestore_client,bigquery_client, var_dataset_id, var_table_id, collection_name, sep='_', max_level=2, page_size=500, handle_subcollections=False, updated_after=None, updated_field=None):
     fields = set()
     example_docs = []
     collection_ref = firestore_client.collection(collection_name)
     last_doc = None
 
     ###### Para colecciones que se bloquean
-    # last_doc = None
-    # batch_size = page_size
-    # batch_number = 0
-    # total_docs_processed = 0
+    batch_size = page_size
+    batch_number = 0
+    total_docs_processed = 0
     ########################
 
     if updated_after and updated_field:
@@ -253,52 +252,52 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 batch_docs.extend(doc_docs)
                 fields.update(doc_fields)
 
-            ###### Para colecciones que se bloquean
-            # if batch_docs:
-            #     batch_number += 1
-            #     temp_file_path = f'/tmp/firestore_data_batch_{batch_number}.json'
-            #     with open(temp_file_path, 'w', encoding='utf-8') as f:
-            #         for doc in batch_docs:
-            #             f.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
+            ##### Para colecciones que se bloquean
+            if batch_docs:
+                batch_number += 1
+                temp_file_path = f'/tmp/firestore_data_batch_{batch_number}.json'
+                with open(temp_file_path, 'w', encoding='utf-8') as f:
+                    for doc in batch_docs:
+                        f.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
 
-            #     # Cargar batch a BigQuery usando WRITE_APPEND
-            #     job_config = bigquery.LoadJobConfig(
-            #         schema=[bigquery.SchemaField(f, "STRING") for f in fields],
-            #         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            #         write_disposition=bigquery.WriteDisposition.WRITE_APPEND
-            #     )
-            #     with open(temp_file_path, "rb") as source_file:
-            #         bigquery_client.load_table_from_file(source_file,
-            #                                              bigquery_client.dataset(var_dataset_id).table(var_table_id),
-            #                                              job_config=job_config).result()
+                # Cargar batch a BigQuery usando WRITE_APPEND
+                job_config = bigquery.LoadJobConfig(
+                    schema=[bigquery.SchemaField(f, "STRING") for f in fields],
+                    source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+                    write_disposition=bigquery.WriteDisposition.WRITE_APPEND
+                )
+                with open(temp_file_path, "rb") as source_file:
+                    bigquery_client.load_table_from_file(source_file,
+                                                         bigquery_client.dataset(var_dataset_id).table(var_table_id),
+                                                         job_config=job_config).result()
 
-            #     total_docs_processed += len(batch_docs)
-            #     print(f"✅ Batch {batch_number} cargado: {len(batch_docs)} docs (total: {total_docs_processed})")
-            #     batch_docs = []
-            ########################
+                total_docs_processed += len(batch_docs)
+                #print(f"✅ Batch {batch_number} cargado: {len(batch_docs)} docs (total: {total_docs_processed})")
+                batch_docs = []
+            #######################
 
-            total_docs = len(example_docs) + len(batch_docs)
-            batch_num = math.ceil(total_docs / page_size)
+    #         total_docs = len(example_docs) + len(batch_docs)
+    #         batch_num = math.ceil(total_docs / page_size)
 
-            # Imprimir cada 500 documentos procesados
-            if total_docs % 500 == 0 or len(docs) < page_size:
-                print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
-                sys.stdout.flush()
+    #         # Imprimir cada 500 documentos procesados
+    #         if total_docs % 500 == 0 or len(docs) < page_size:
+    #             print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
+    #             sys.stdout.flush()
 
-            if docs:
-                last_doc = docs[-1]
-            example_docs.extend(batch_docs)
-            if len(docs) < page_size:  # <- comparar con docs, no batch_docs
-                break
+    #         if docs:
+    #             last_doc = docs[-1]
+    #         example_docs.extend(batch_docs)
+    #         if len(docs) < page_size:  # <- comparar con docs, no batch_docs
+    #             break
 
-    return example_docs, fields
+    # return example_docs, fields
 
-    ###### Para colecciones que se bloquean
-            #last_doc = docs[-1]
+    ##### Para colecciones que se bloquean
+            last_doc = docs[-1]
 
-    # print(f"✅ Proceso completado. Total documentos cargados: {total_docs_processed}")
-    # return total_docs_processed, fields
-    ###############################
+    print(f"✅ Proceso completado. Total documentos cargados: {total_docs_processed}")
+    return total_docs_processed, fields
+    ##############################
 
 
 # -------------------------------
@@ -445,9 +444,9 @@ def export_firestore_to_bigquery(request):
     # Procesar colección
     print(f"🔍 Procesando colección: {var_main_collection}")
     sys.stdout.flush()
-    example_docs, fields = process_collection(firestore_client,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
+    #example_docs, fields = process_collection(firestore_client,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
     ###### Para colecciones que se bloquean
-    #example_docs, fields = process_collection(firestore_client, bigquery_client,var_dataset_id,var_table_id,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
+    example_docs, fields = process_collection(firestore_client, bigquery_client,var_dataset_id,var_table_id,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
     ###############################
     if not example_docs:
         print(f"⛔ No se encontraron documentos en la colección: {var_main_collection}")
@@ -457,139 +456,139 @@ def export_firestore_to_bigquery(request):
     print(f"✅ Documentos extraídos: {len(example_docs)}")
     sys.stdout.flush()
 
-    print('📝 Creando archivo JSON temporal...')
-    sys.stdout.flush()
+    # print('📝 Creando archivo JSON temporal...')
+    # sys.stdout.flush()
 
-    temp_file_path = '/tmp/firestore_data.json'
-    with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
-        for doc in example_docs:
-            json_line = json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False)
-            temp_file.write(json_line + '\n')
+    # temp_file_path = '/tmp/firestore_data.json'
+    # with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
+    #     for doc in example_docs:
+    #         json_line = json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False)
+    #         temp_file.write(json_line + '\n')
 
-    print('📝 Archivo JSON temporal creado:', temp_file_path)
-    sys.stdout.flush()
+    # print('📝 Archivo JSON temporal creado:', temp_file_path)
+    # sys.stdout.flush()
 
-    # Verificación opcional de formato NDJSON (solo logs)
-    try:
-        with open(temp_file_path, 'r', encoding='utf-8') as check_file:
-            first_line = check_file.readline().strip()
-            if first_line:
-                json.loads(first_line)
-                print("✅ Archivo NDJSON válido (BigQuery podrá leerlo).")
-                sys.stdout.flush()
-            else:
-                print("⚠️ Archivo NDJSON vacío.")
-                sys.stdout.flush()
-    except Exception as e:
-        print(f"⚠️ Error validando NDJSON: {e}")
-    sys.stdout.flush()
-
-
-    # Crear esquema y tabla BigQuery
-    fields = list(set(f.lower() for f in fields))
-    schema = [bigquery.SchemaField(f, "STRING", mode="NULLABLE") for f in fields]
-    table_ref = bigquery_client.dataset(var_dataset_id).table(var_table_id)
-    bigquery_client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
-
-    # -----------------------
-    # Cargar tabla temporal
-    # -----------------------
-    print('📝 Creando tabla temporal...')
-    sys.stdout.flush()
-    temp_table_id = var_table_id + "_temp"
-    temp_table_ref = bigquery_client.dataset(var_dataset_id).table(temp_table_id)
-    bigquery_client.create_table(bigquery.Table(temp_table_ref, schema=schema), exists_ok=True)
-
-    job_config_temp = bigquery.LoadJobConfig(
-        schema=schema,
-        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        autodetect=True,
-        max_bad_records=50
-    )
-    with open(temp_file_path, "rb") as source_file:
-        print('📝 Cargando tabla temporal...')
-        sys.stdout.flush()
-        bigquery_client.load_table_from_file(source_file, temp_table_ref, job_config=job_config_temp).result()
-
-    # -----------------------
-    # MERGE / DELETE si incremental
-    # -----------------------
-    if not full_export:
-        print('📝 Merge / Delete si incremental...')
-        sys.stdout.flush()
-        merge_sql = f"""
-            MERGE `{var_dataset_id}.{var_table_id}` T
-            USING `{var_dataset_id}.{temp_table_id}` S
-            ON T.id = S.id
-            WHEN MATCHED THEN UPDATE SET {', '.join([f'T.{f} = S.{f}' for f in fields])}
-            WHEN NOT MATCHED THEN INSERT ({', '.join(fields)}) VALUES ({', '.join([f'S.{f}' for f in fields])})
-        """
-        merge_job = bigquery_client.query(merge_sql)
-        merge_result = merge_job.result()
-        print(f"✅ Merge completado: {merge_result.num_dml_affected_rows} filas afectadas (insert/update)")
-        sys.stdout.flush()
-
-        print("📝 Obteniendo todos los IDs actuales de Firestore para manejar eliminados (paginado)...")
-        sys.stdout.flush()
-        collection_ref = firestore_client.collection(var_main_collection)
-        all_ids = get_all_ids_paged(collection_ref, page_size=page_size)
-        print(f"✅ IDs obtenidos: {len(all_ids)}")
-        sys.stdout.flush()
-
-        # Crear tabla temporal de IDs
-        all_ids_table_id = var_table_id + "_all_ids_temp"
-        all_ids_table_ref = bigquery_client.dataset(var_dataset_id).table(all_ids_table_id)
-        schema_ids = [bigquery.SchemaField("id", "STRING", mode="REQUIRED")]
-        bigquery_client.create_table(bigquery.Table(all_ids_table_ref, schema=schema_ids), exists_ok=True)
-
-        # Guardar IDs en archivo temporal JSONL
-        temp_ids_path = '/tmp/all_ids.json'
-        with open(temp_ids_path, 'w', encoding='utf-8') as f:
-            for row in all_ids:
-                f.write(json.dumps(row, ensure_ascii=False) + '\n')
-
-        # Cargar en BigQuery sobrescribiendo la tabla
-        job_config = bigquery.LoadJobConfig(
-            schema=schema_ids,
-            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
-        )
-        with open(temp_ids_path, "rb") as source_file:
-            bigquery_client.load_table_from_file(source_file, all_ids_table_ref, job_config=job_config).result()
-
-        print(f"✅ IDs actuales de Firestore cargados en la tabla {all_ids_table_id} en BigQuery (full refresh)")
-        sys.stdout.flush()
+    # # Verificación opcional de formato NDJSON (solo logs)
+    # try:
+    #     with open(temp_file_path, 'r', encoding='utf-8') as check_file:
+    #         first_line = check_file.readline().strip()
+    #         if first_line:
+    #             json.loads(first_line)
+    #             print("✅ Archivo NDJSON válido (BigQuery podrá leerlo).")
+    #             sys.stdout.flush()
+    #         else:
+    #             print("⚠️ Archivo NDJSON vacío.")
+    #             sys.stdout.flush()
+    # except Exception as e:
+    #     print(f"⚠️ Error validando NDJSON: {e}")
+    # sys.stdout.flush()
 
 
-        delete_sql = f"""
-        DELETE FROM `{var_dataset_id}.{var_table_id}`
-        WHERE id NOT IN (SELECT id FROM `{var_dataset_id}.{all_ids_table_id}`)
-        """
-        delete_job = bigquery_client.query(delete_sql)
-        delete_result = delete_job.result()
-        print(f"✅ Delete completado: {delete_result.num_dml_affected_rows} filas eliminadas")
-        sys.stdout.flush()
+    # # Crear esquema y tabla BigQuery
+    # fields = list(set(f.lower() for f in fields))
+    # schema = [bigquery.SchemaField(f, "STRING", mode="NULLABLE") for f in fields]
+    # table_ref = bigquery_client.dataset(var_dataset_id).table(var_table_id)
+    # bigquery_client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
+
+    # # -----------------------
+    # # Cargar tabla temporal
+    # # -----------------------
+    # print('📝 Creando tabla temporal...')
+    # sys.stdout.flush()
+    # temp_table_id = var_table_id + "_temp"
+    # temp_table_ref = bigquery_client.dataset(var_dataset_id).table(temp_table_id)
+    # bigquery_client.create_table(bigquery.Table(temp_table_ref, schema=schema), exists_ok=True)
+
+    # job_config_temp = bigquery.LoadJobConfig(
+    #     schema=schema,
+    #     source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+    #     write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+    #     autodetect=True,
+    #     max_bad_records=50
+    # )
+    # with open(temp_file_path, "rb") as source_file:
+    #     print('📝 Cargando tabla temporal...')
+    #     sys.stdout.flush()
+    #     bigquery_client.load_table_from_file(source_file, temp_table_ref, job_config=job_config_temp).result()
+
+    # # -----------------------
+    # # MERGE / DELETE si incremental
+    # # -----------------------
+    # if not full_export:
+    #     print('📝 Merge / Delete si incremental...')
+    #     sys.stdout.flush()
+    #     merge_sql = f"""
+    #         MERGE `{var_dataset_id}.{var_table_id}` T
+    #         USING `{var_dataset_id}.{temp_table_id}` S
+    #         ON T.id = S.id
+    #         WHEN MATCHED THEN UPDATE SET {', '.join([f'T.{f} = S.{f}' for f in fields])}
+    #         WHEN NOT MATCHED THEN INSERT ({', '.join(fields)}) VALUES ({', '.join([f'S.{f}' for f in fields])})
+    #     """
+    #     merge_job = bigquery_client.query(merge_sql)
+    #     merge_result = merge_job.result()
+    #     print(f"✅ Merge completado: {merge_result.num_dml_affected_rows} filas afectadas (insert/update)")
+    #     sys.stdout.flush()
+
+    #     print("📝 Obteniendo todos los IDs actuales de Firestore para manejar eliminados (paginado)...")
+    #     sys.stdout.flush()
+    #     collection_ref = firestore_client.collection(var_main_collection)
+    #     all_ids = get_all_ids_paged(collection_ref, page_size=page_size)
+    #     print(f"✅ IDs obtenidos: {len(all_ids)}")
+    #     sys.stdout.flush()
+
+    #     # Crear tabla temporal de IDs
+    #     all_ids_table_id = var_table_id + "_all_ids_temp"
+    #     all_ids_table_ref = bigquery_client.dataset(var_dataset_id).table(all_ids_table_id)
+    #     schema_ids = [bigquery.SchemaField("id", "STRING", mode="REQUIRED")]
+    #     bigquery_client.create_table(bigquery.Table(all_ids_table_ref, schema=schema_ids), exists_ok=True)
+
+    #     # Guardar IDs en archivo temporal JSONL
+    #     temp_ids_path = '/tmp/all_ids.json'
+    #     with open(temp_ids_path, 'w', encoding='utf-8') as f:
+    #         for row in all_ids:
+    #             f.write(json.dumps(row, ensure_ascii=False) + '\n')
+
+    #     # Cargar en BigQuery sobrescribiendo la tabla
+    #     job_config = bigquery.LoadJobConfig(
+    #         schema=schema_ids,
+    #         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+    #         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+    #     )
+    #     with open(temp_ids_path, "rb") as source_file:
+    #         bigquery_client.load_table_from_file(source_file, all_ids_table_ref, job_config=job_config).result()
+
+    #     print(f"✅ IDs actuales de Firestore cargados en la tabla {all_ids_table_id} en BigQuery (full refresh)")
+    #     sys.stdout.flush()
 
 
-        print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
-        sys.stdout.flush()
+    #     delete_sql = f"""
+    #     DELETE FROM `{var_dataset_id}.{var_table_id}`
+    #     WHERE id NOT IN (SELECT id FROM `{var_dataset_id}.{all_ids_table_id}`)
+    #     """
+    #     delete_job = bigquery_client.query(delete_sql)
+    #     delete_result = delete_job.result()
+    #     print(f"✅ Delete completado: {delete_result.num_dml_affected_rows} filas eliminadas")
+    #     sys.stdout.flush()
 
-    else:
-        print('📝 Full export: sobrescribe la tabla...')
-        sys.stdout.flush()
-        # Full export: sobrescribe la tabla
-        job_config_full = bigquery.LoadJobConfig(
-            schema=schema,
-            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-            autodetect=True,
-            max_bad_records=50
-        )
-        with open(temp_file_path, "rb") as source_file:
-            bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
-        print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
-        sys.stdout.flush()
+
+    #     print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
+    #     sys.stdout.flush()
+
+    # else:
+    #     print('📝 Full export: sobrescribe la tabla...')
+    #     sys.stdout.flush()
+    #     # Full export: sobrescribe la tabla
+    #     job_config_full = bigquery.LoadJobConfig(
+    #         schema=schema,
+    #         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+    #         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+    #         autodetect=True,
+    #         max_bad_records=50
+    #     )
+    #     with open(temp_file_path, "rb") as source_file:
+    #         bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
+    #     print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
+    #     sys.stdout.flush()
 
     duration = (datetime.now(timezone.utc) - start_time).total_seconds()
     print(f"✅ Tiempo de ejecución: {duration} segundos")
