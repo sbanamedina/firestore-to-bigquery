@@ -180,17 +180,19 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
 
     return example_docs, fields
 
-def process_collection(firestore_client,bigquery_client, var_dataset_id, var_table_id, collection_name, sep='_', max_level=2, page_size=500, handle_subcollections=False, updated_after=None, updated_field=None):
+def process_collection(firestore_client, collection_name, sep='_', max_level=2, page_size=500, handle_subcollections=False, updated_after=None, updated_field=None):
+# Para colecciones que se bloquean
+#def process_collection(firestore_client,bigquery_client, var_dataset_id, var_table_id, collection_name, sep='_', max_level=2, page_size=500, handle_subcollections=False, updated_after=None, updated_field=None):
     fields = set()
     example_docs = []
     collection_ref = firestore_client.collection(collection_name)
     last_doc = None
 
-    ######temporal
-    last_doc = None
-    batch_size = page_size
-    batch_number = 0
-    total_docs_processed = 0
+    ###### Para colecciones que se bloquean
+    # last_doc = None
+    # batch_size = page_size
+    # batch_number = 0
+    # total_docs_processed = 0
     ########################
 
     if updated_after and updated_field:
@@ -251,50 +253,52 @@ def process_collection(firestore_client,bigquery_client, var_dataset_id, var_tab
                 batch_docs.extend(doc_docs)
                 fields.update(doc_fields)
 
-            ######temporal
-            if batch_docs:
-                batch_number += 1
-                temp_file_path = f'/tmp/firestore_data_batch_{batch_number}.json'
-                with open(temp_file_path, 'w', encoding='utf-8') as f:
-                    for doc in batch_docs:
-                        f.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
+            ###### Para colecciones que se bloquean
+            # if batch_docs:
+            #     batch_number += 1
+            #     temp_file_path = f'/tmp/firestore_data_batch_{batch_number}.json'
+            #     with open(temp_file_path, 'w', encoding='utf-8') as f:
+            #         for doc in batch_docs:
+            #             f.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
 
-                # Cargar batch a BigQuery usando WRITE_APPEND
-                job_config = bigquery.LoadJobConfig(
-                    schema=[bigquery.SchemaField(f, "STRING") for f in fields],
-                    source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-                    write_disposition=bigquery.WriteDisposition.WRITE_APPEND
-                )
-                with open(temp_file_path, "rb") as source_file:
-                    bigquery_client.load_table_from_file(source_file,
-                                                         bigquery_client.dataset(var_dataset_id).table(var_table_id),
-                                                         job_config=job_config).result()
+            #     # Cargar batch a BigQuery usando WRITE_APPEND
+            #     job_config = bigquery.LoadJobConfig(
+            #         schema=[bigquery.SchemaField(f, "STRING") for f in fields],
+            #         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+            #         write_disposition=bigquery.WriteDisposition.WRITE_APPEND
+            #     )
+            #     with open(temp_file_path, "rb") as source_file:
+            #         bigquery_client.load_table_from_file(source_file,
+            #                                              bigquery_client.dataset(var_dataset_id).table(var_table_id),
+            #                                              job_config=job_config).result()
 
-                total_docs_processed += len(batch_docs)
-                print(f"✅ Batch {batch_number} cargado: {len(batch_docs)} docs (total: {total_docs_processed})")
-                batch_docs = []
-
+            #     total_docs_processed += len(batch_docs)
+            #     print(f"✅ Batch {batch_number} cargado: {len(batch_docs)} docs (total: {total_docs_processed})")
+            #     batch_docs = []
             ########################
 
-            # total_docs = len(example_docs) + len(batch_docs)
-            # batch_num = math.ceil(total_docs / page_size)
+            total_docs = len(example_docs) + len(batch_docs)
+            batch_num = math.ceil(total_docs / page_size)
 
-            # # Imprimir cada 500 documentos procesados
-            # if total_docs % 500 == 0 or len(docs) < page_size:
-            #     print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
-            #     sys.stdout.flush()
+            # Imprimir cada 500 documentos procesados
+            if total_docs % 500 == 0 or len(docs) < page_size:
+                print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
+                sys.stdout.flush()
 
-    #         if docs:
-    #             last_doc = docs[-1]
-    #         example_docs.extend(batch_docs)
-    #         if len(docs) < page_size:  # <- comparar con docs, no batch_docs
-    #             break
+            if docs:
+                last_doc = docs[-1]
+            example_docs.extend(batch_docs)
+            if len(docs) < page_size:  # <- comparar con docs, no batch_docs
+                break
 
-    # return example_docs, fields
-            last_doc = docs[-1]
+    return example_docs, fields
 
-    print(f"✅ Proceso completado. Total documentos cargados: {total_docs_processed}")
-    return total_docs_processed, fields
+    ###### Para colecciones que se bloquean
+            #last_doc = docs[-1]
+
+    # print(f"✅ Proceso completado. Total documentos cargados: {total_docs_processed}")
+    # return total_docs_processed, fields
+    ###############################
 
 
 # -------------------------------
@@ -441,7 +445,10 @@ def export_firestore_to_bigquery(request):
     # Procesar colección
     print(f"🔍 Procesando colección: {var_main_collection}")
     sys.stdout.flush()
-    example_docs, fields = process_collection(firestore_client, bigquery_client,var_dataset_id,var_table_id,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
+    example_docs, fields = process_collection(firestore_client,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
+    ###### Para colecciones que se bloquean
+    #example_docs, fields = process_collection(firestore_client, bigquery_client,var_dataset_id,var_table_id,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_field=updated_field)
+    ###############################
     if not example_docs:
         print(f"⛔ No se encontraron documentos en la colección: {var_main_collection}")
         sys.stdout.flush()
