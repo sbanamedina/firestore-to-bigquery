@@ -183,7 +183,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                     collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
                 if updated_before:
                     collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before))
-                collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
+                #collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
                 print(f"🧭 Campo {updated_field} detectado como TIMESTAMP, filtro aplicado.")
                 sys.stdout.flush()
             elif isinstance(sample_value, str):
@@ -194,7 +194,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 if updated_before:
                     updated_before_str = updated_before.strftime("%Y-%m-%d %H:%M:%S")
                     collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
-                collection_ref = collection_ref.order_by(updated_field)
+                #collection_ref = collection_ref.order_by(updated_field)
                 print(f"🧭 Campo {updated_field} detectado como STRING con formato SQL, filtro aplicado: {updated_after_str} → {updated_before_str}")
                 sys.stdout.flush()
             else:
