@@ -139,25 +139,6 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
     fields.update(flattened_data.keys())
 
     if handle_subcollections:
-        #try:
-            # Usar retry con deadline extendido
-        #     for subcollection in doc_ref.collections(retry=Retry(deadline=300)):
-        #         subcollection_path = f"{parent_path}{sep}{subcollection.id}" if parent_path else subcollection.id
-        #         for sub_doc in subcollection.stream():
-        #             sub_docs, sub_fields = process_document(
-        #                 firestore_client,
-        #                 sub_doc.reference,
-        #                 parent_path=subcollection_path,
-        #                 sep=sep,
-        #                 max_level=max_level,
-        #                 handle_subcollections=True,
-        #                 updated_after=updated_after,
-        #                 updated_field=updated_field
-        #             )
-        #             example_docs.extend(sub_docs)
-        #             fields.update(sub_fields)
-        # except GoogleAPICallError as e:
-        #     print(f"⚠️ Error al listar subcollections de {doc_ref.path}: {e}")
         try:
             for subcollection in doc_ref.collections():
                 subcollection_path = f"{parent_path}{sep}{subcollection.id}" if parent_path else subcollection.id
@@ -227,9 +208,12 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     # -----------------------
     with concurrent.futures.ThreadPoolExecutor() as executor:
         while True:
-            query = collection_ref.limit(page_size)
-            if last_doc:
-                query = query.start_after(last_doc)
+            while True:
+                # Ordenar por __name__ garantiza paginación estable
+                query = collection_ref.order_by("__name__").limit(page_size)
+                if last_doc:
+                    query = query.start_after({"__name__": last_doc.id})
+
 
             docs = safe_stream(query)
             if not docs:
