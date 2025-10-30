@@ -208,12 +208,16 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     # -----------------------
     with concurrent.futures.ThreadPoolExecutor() as executor:
         while True:
-            # Ordenar por __name__ garantiza paginación estable
-            query = collection_ref.order_by("__name__").limit(page_size)
+            query = collection_ref.order_by(updated_field).order_by("__name__").limit(page_size)
+            
             if last_doc:
-                query = query.start_after({"__name__": last_doc.id})
+                last_value = last_doc.to_dict().get(updated_field)
+                if last_value is not None:
+                    query = query.start_after({updated_field: last_value, "__name__": last_doc.id})
+                else:
+                    query = query.start_after({"__name__": last_doc.id})
 
-            docs = safe_stream(query)
+            docs = list(query.stream())
             if not docs:
                 break
 
