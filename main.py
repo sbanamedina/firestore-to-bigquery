@@ -182,99 +182,37 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
 
 def process_collection(firestore_client, collection_name, sep='_', max_level=2, page_size=500,
                        handle_subcollections=False, updated_after=None, updated_before=None, updated_field=None):
-# Para colecciones que se bloquean
-#def process_collection(firestore_client,bigquery_client, var_dataset_id, var_table_id, collection_name, sep='_', max_level=2, page_size=500, handle_subcollections=False, updated_after=None, updated_before=Noneupdated_field=None):
     fields = set()
     example_docs = []
     collection_ref = firestore_client.collection(collection_name)
     last_doc = None
 
-    # Filtro incremental por fecha (aquí va el bloque)
-    if updated_after and updated_field:
-        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
-    if updated_before and updated_field:
-        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before))
-
-    ###### Para colecciones que se bloquean
-    # batch_size = page_size
-    # batch_number = 0
-    # total_docs_processed = 0
-    ########################
-
-    # if updated_field:
-    #     try:
-    #         # Obtenemos un documento de ejemplo para detectar tipo de dato
-    #         for d in firestore_client.collection(collection_name).limit(10).stream():
-    #             if updated_field in d.to_dict():
-    #                 sample_value = d.to_dict()[updated_field]
-    #                 break
-    #         else:
-    #             sample_value = None
-
-    #         # Si el campo es timestamp Firestore, aplicamos filtro tipo datetime
-    #         if isinstance(sample_value, datetime):
-    #             # print(f"🧭 Filtro aplicado como TIMESTAMP: {updated_field} > {updated_after}")
-    #             # sys.stdout.flush()                
-    #             #collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
-    #             print(f"🧭 Campo {updated_field} detectado como TIMESTAMP (filtro aplicado desde {updated_after})")
-    #             sys.stdout.flush()
-                
-    #             # Para campos tipo Timestamp, sí podemos ordenar por ambos
-    #             collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
-
-    #         else:
-    #             # updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
-    #             # print(f"🧭 Filtro aplicado como STRING: {updated_field} > '{updated_after_str}'")
-    #             # sys.stdout.flush()
-    #             # collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
-    #             print(f"🧭 Campo {updated_field} detectado como STRING (filtro aplicado desde {updated_after})")
-    #             sys.stdout.flush()
-                
-    #             # Evitar order_by("__name__") en campos string para prevenir error 400
-    #             collection_ref = collection_ref.order_by(updated_field)
-
-    #     except Exception as e:
-    #         print(f"⚠️ No se pudo determinar tipo de {updated_field}. Filtro omitido: {e}")
-
     # -----------------------
-# Filtro incremental por fecha robusto
-# -----------------------
-    if updated_field:
+    # Filtro incremental robusto
+    # -----------------------
+    if updated_field and (updated_after or updated_before):
         try:
-            # Obtener un valor de ejemplo para detectar tipo
-            sample_doc = next(firestore_client.collection(collection_name)
-                            .limit(1).stream(), None)
-            if sample_doc:
-                sample_value = sample_doc.to_dict().get(updated_field)
-            else:
-                sample_value = None
+            # Obtener un valor de ejemplo
+            sample_doc = next(firestore_client.collection(collection_name).limit(1).stream(), None)
+            sample_value = sample_doc.to_dict().get(updated_field) if sample_doc else None
 
-            # Determinar tipo
             if isinstance(sample_value, datetime):
-                # Campo tipo Timestamp → usamos datetime directamente
+                # Campo tipo Timestamp
                 if updated_after:
-                    collection_ref = collection_ref.where(
-                        filter=FieldFilter(updated_field, ">", updated_after)
-                    )
+                    collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
                 if updated_before:
-                    collection_ref = collection_ref.where(
-                        filter=FieldFilter(updated_field, "<=", updated_before)
-                    )
+                    collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before))
                 collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
                 print(f"🧭 Campo {updated_field} detectado como TIMESTAMP, filtro aplicado.")
                 sys.stdout.flush()
             elif isinstance(sample_value, str):
-                # Campo tipo STRING ISO → convertir filtros a string
+                # Campo tipo STRING ISO
                 if updated_after:
                     updated_after_str = updated_after.isoformat()
-                    collection_ref = collection_ref.where(
-                        filter=FieldFilter(updated_field, ">", updated_after_str)
-                    )
+                    collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
                 if updated_before:
                     updated_before_str = updated_before.isoformat()
-                    collection_ref = collection_ref.where(
-                        filter=FieldFilter(updated_field, "<=", updated_before_str)
-                    )
+                    collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
                 collection_ref = collection_ref.order_by(updated_field)
                 print(f"🧭 Campo {updated_field} detectado como STRING ISO, filtro aplicado.")
                 sys.stdout.flush()
@@ -284,15 +222,19 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
         except Exception as e:
             print(f"⚠️ No se pudo aplicar filtro por {updated_field}: {e}")
             sys.stdout.flush()
-
-
+    # -----------------------
+    # Paginación y procesamiento de documentos
+    # -----------------------
     with concurrent.futures.ThreadPoolExecutor() as executor:
         while True:
-            query = collection_ref.limit(page_size)  # <- No volver a order_by
+            query = collection_ref.limit(page_size)
             if last_doc:
                 query = query.start_after(last_doc)
-            #docs = list(query.stream())
+
             docs = safe_stream(query)
+            if not docs:
+                break
+
             batch_docs = []
             futures = [
                 executor.submit(
@@ -313,53 +255,17 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 batch_docs.extend(doc_docs)
                 fields.update(doc_fields)
 
-            # ##### Para colecciones que se bloquean
-            # if batch_docs:
-            #     batch_number += 1
-            #     temp_file_path = f'/tmp/firestore_data_batch_{batch_number}.json'
-            #     with open(temp_file_path, 'w', encoding='utf-8') as f:
-            #         for doc in batch_docs:
-            #             f.write(json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False) + '\n')
-
-            #     # Cargar batch a BigQuery usando WRITE_APPEND
-            #     job_config = bigquery.LoadJobConfig(
-            #         schema=[bigquery.SchemaField(f, "STRING") for f in fields],
-            #         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            #         write_disposition=bigquery.WriteDisposition.WRITE_APPEND
-            #     )
-            #     with open(temp_file_path, "rb") as source_file:
-            #         bigquery_client.load_table_from_file(source_file,
-            #                                              bigquery_client.dataset(var_dataset_id).table(var_table_id),
-            #                                              job_config=job_config).result()
-
-            #     total_docs_processed += len(batch_docs)
-            #     #print(f"✅ Batch {batch_number} cargado: {len(batch_docs)} docs (total: {total_docs_processed})")
-            #     batch_docs = []
-            # #######################
-
             total_docs = len(example_docs) + len(batch_docs)
-            batch_num = math.ceil(total_docs / page_size)
-
-            # Imprimir cada 500 documentos procesados
             if total_docs % 500 == 0 or len(docs) < page_size:
                 print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
                 sys.stdout.flush()
 
-            if docs:
-                last_doc = docs[-1]
+            last_doc = docs[-1]
             example_docs.extend(batch_docs)
-            if len(docs) < page_size:  # <- comparar con docs, no batch_docs
+            if len(docs) < page_size:
                 break
 
     return example_docs, fields
-
-    # ##### Para colecciones que se bloquean
-    #         last_doc = docs[-1]
-
-    # print(f"✅ Proceso completado. Total documentos cargados: {total_docs_processed}")
-    # return total_docs_processed, fields
-    # ##############################
-
 
 # -------------------------------
 # Control de ejecución duplicada en BigQuery
