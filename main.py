@@ -201,40 +201,86 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     # total_docs_processed = 0
     ########################
 
+    # if updated_field:
+    #     try:
+    #         # Obtenemos un documento de ejemplo para detectar tipo de dato
+    #         for d in firestore_client.collection(collection_name).limit(10).stream():
+    #             if updated_field in d.to_dict():
+    #                 sample_value = d.to_dict()[updated_field]
+    #                 break
+    #         else:
+    #             sample_value = None
+
+    #         # Si el campo es timestamp Firestore, aplicamos filtro tipo datetime
+    #         if isinstance(sample_value, datetime):
+    #             # print(f"🧭 Filtro aplicado como TIMESTAMP: {updated_field} > {updated_after}")
+    #             # sys.stdout.flush()                
+    #             #collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
+    #             print(f"🧭 Campo {updated_field} detectado como TIMESTAMP (filtro aplicado desde {updated_after})")
+    #             sys.stdout.flush()
+                
+    #             # Para campos tipo Timestamp, sí podemos ordenar por ambos
+    #             collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
+
+    #         else:
+    #             # updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
+    #             # print(f"🧭 Filtro aplicado como STRING: {updated_field} > '{updated_after_str}'")
+    #             # sys.stdout.flush()
+    #             # collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
+    #             print(f"🧭 Campo {updated_field} detectado como STRING (filtro aplicado desde {updated_after})")
+    #             sys.stdout.flush()
+                
+    #             # Evitar order_by("__name__") en campos string para prevenir error 400
+    #             collection_ref = collection_ref.order_by(updated_field)
+
+    #     except Exception as e:
+    #         print(f"⚠️ No se pudo determinar tipo de {updated_field}. Filtro omitido: {e}")
+
+    # -----------------------
+# Filtro incremental por fecha robusto
+# -----------------------
     if updated_field:
         try:
-            # Obtenemos un documento de ejemplo para detectar tipo de dato
-            for d in firestore_client.collection(collection_name).limit(10).stream():
-                if updated_field in d.to_dict():
-                    sample_value = d.to_dict()[updated_field]
-                    break
+            # Obtener un valor de ejemplo para detectar tipo
+            sample_doc = next(firestore_client.collection(collection_name)
+                            .limit(1).stream(), None)
+            if sample_doc:
+                sample_value = sample_doc.to_dict().get(updated_field)
             else:
                 sample_value = None
 
-            # Si el campo es timestamp Firestore, aplicamos filtro tipo datetime
+            # Determinar tipo
             if isinstance(sample_value, datetime):
-                # print(f"🧭 Filtro aplicado como TIMESTAMP: {updated_field} > {updated_after}")
-                # sys.stdout.flush()                
-                #collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
-                print(f"🧭 Campo {updated_field} detectado como TIMESTAMP (filtro aplicado desde {updated_after})")
-                sys.stdout.flush()
-                
-                # Para campos tipo Timestamp, sí podemos ordenar por ambos
+                # Campo tipo Timestamp → usamos datetime directamente
+                if updated_after:
+                    collection_ref = collection_ref.where(
+                        filter=FieldFilter(updated_field, ">", updated_after)
+                    )
+                if updated_before:
+                    collection_ref = collection_ref.where(
+                        filter=FieldFilter(updated_field, "<=", updated_before)
+                    )
                 collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
-
-            else:
-                # updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
-                # print(f"🧭 Filtro aplicado como STRING: {updated_field} > '{updated_after_str}'")
-                # sys.stdout.flush()
-                # collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
-                print(f"🧭 Campo {updated_field} detectado como STRING (filtro aplicado desde {updated_after})")
-                sys.stdout.flush()
-                
-                # Evitar order_by("__name__") en campos string para prevenir error 400
+                print(f"🧭 Campo {updated_field} detectado como TIMESTAMP, filtro aplicado.")
+            elif isinstance(sample_value, str):
+                # Campo tipo STRING ISO → convertir filtros a string
+                if updated_after:
+                    updated_after_str = updated_after.isoformat()
+                    collection_ref = collection_ref.where(
+                        filter=FieldFilter(updated_field, ">", updated_after_str)
+                    )
+                if updated_before:
+                    updated_before_str = updated_before.isoformat()
+                    collection_ref = collection_ref.where(
+                        filter=FieldFilter(updated_field, "<=", updated_before_str)
+                    )
                 collection_ref = collection_ref.order_by(updated_field)
-
+                print(f"🧭 Campo {updated_field} detectado como STRING ISO, filtro aplicado.")
+            else:
+                print(f"⚠️ Tipo de campo {updated_field} no soportado, filtro omitido.")
         except Exception as e:
-            print(f"⚠️ No se pudo determinar tipo de {updated_field}. Filtro omitido: {e}")
+            print(f"⚠️ No se pudo aplicar filtro por {updated_field}: {e}")
+
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         while True:
