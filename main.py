@@ -262,6 +262,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                     )
                 collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
                 print(f"🧭 Campo {updated_field} detectado como TIMESTAMP, filtro aplicado.")
+                sys.stdout.flush()
             elif isinstance(sample_value, str):
                 # Campo tipo STRING ISO → convertir filtros a string
                 if updated_after:
@@ -276,10 +277,13 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                     )
                 collection_ref = collection_ref.order_by(updated_field)
                 print(f"🧭 Campo {updated_field} detectado como STRING ISO, filtro aplicado.")
+                sys.stdout.flush()
             else:
                 print(f"⚠️ Tipo de campo {updated_field} no soportado, filtro omitido.")
+                sys.stdout.flush()
         except Exception as e:
             print(f"⚠️ No se pudo aplicar filtro por {updated_field}: {e}")
+            sys.stdout.flush()
 
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
