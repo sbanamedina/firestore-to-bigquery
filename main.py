@@ -187,15 +187,15 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 print(f"🧭 Campo {updated_field} detectado como TIMESTAMP, filtro aplicado.")
                 sys.stdout.flush()
             elif isinstance(sample_value, str):
-                # Campo tipo STRING ISO
+                # Campo tipo STRING con formato SQL "YYYY-MM-DD HH:MM:SS"
                 if updated_after:
-                    updated_after_str = updated_after.isoformat()
+                    updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
                     collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
                 if updated_before:
-                    updated_before_str = updated_before.isoformat()
+                    updated_before_str = updated_before.strftime("%Y-%m-%d %H:%M:%S")
                     collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
                 collection_ref = collection_ref.order_by(updated_field)
-                print(f"🧭 Campo {updated_field} detectado como STRING ISO, filtro aplicado.")
+                print(f"🧭 Campo {updated_field} detectado como STRING con formato SQL, filtro aplicado: {updated_after_str} → {updated_before_str}")
                 sys.stdout.flush()
             else:
                 print(f"⚠️ Tipo de campo {updated_field} no soportado, filtro omitido.")
