@@ -173,6 +173,12 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     # -----------------------
     if updated_field and (updated_after or updated_before):
         try:
+            # Si no hay updated_before, usamos "ahora" como límite superior
+            if updated_after and not updated_before:
+                updated_before = datetime.now(timezone.utc)
+                print(f"🔹 No se proporcionó updated_before, se usará ahora como límite superior: {updated_before}")
+                sys.stdout.flush()
+                
             # Obtener un valor de ejemplo
             sample_doc = next(firestore_client.collection(collection_name).limit(1).stream(), None)
             sample_value = sample_doc.to_dict().get(updated_field) if sample_doc else None
