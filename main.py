@@ -233,7 +233,10 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     # -----------------------
     with concurrent.futures.ThreadPoolExecutor() as executor:
         while True:
-            query = collection_ref.order_by(updated_field).order_by("__name__").limit(page_size)
+            if updated_field:
+                query = collection_ref.order_by(updated_field).order_by("__name__").limit(page_size)
+            else:
+                query = collection_ref.order_by("__name__").limit(page_size)
             
             if last_doc:
                 last_value = last_doc.to_dict().get(updated_field)
