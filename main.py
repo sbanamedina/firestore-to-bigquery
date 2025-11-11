@@ -17,6 +17,7 @@ from google.api_core.exceptions import GoogleAPICallError
 import time
 from google.api_core.exceptions import ServiceUnavailable, DeadlineExceeded, GoogleAPICallError, RetryError
 from google.cloud.firestore_v1.base_query import FieldFilter
+import unicodedata
 
 def safe_sql_string(value):
     """
@@ -28,6 +29,14 @@ def safe_sql_string(value):
         clean = clean.replace("'", "\\'").replace("\n", " ").replace("\r", " ")
         return clean
     return value
+
+def normalize_field_name(name):
+    # Elimina acentos y caracteres especiales
+    nfkd = unicodedata.normalize('NFKD', name)
+    name = "".join([c for c in nfkd if not unicodedata.combining(c)])
+    name = re.sub(r'\W+', '_', name)  # Sustituye todo lo no alfanumérico por "_"
+    return name.lower().strip('_')
+
 
 def safe_stream(query, max_attempts=5, base_backoff=1.0):
     """Ejecuta un query Firestore con reintento y backoff exponencial."""
@@ -480,7 +489,8 @@ def export_firestore_to_bigquery(request):
 
 
     # Crear esquema y tabla BigQuery
-    fields = list(set(f.lower() for f in fields))
+    # Normalizar nombres de campos para evitar errores en BigQuery
+    fields = list(set(normalize_field_name(f) for f in fields))
     schema = [bigquery.SchemaField(f, "STRING", mode="NULLABLE") for f in fields]
     table_ref = bigquery_client.dataset(var_dataset_id).table(var_table_id)
     bigquery_client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
