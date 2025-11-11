@@ -18,6 +18,16 @@ import time
 from google.api_core.exceptions import ServiceUnavailable, DeadlineExceeded, GoogleAPICallError, RetryError
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+def safe_sql_string(value):
+    """
+    Limpia cadenas para evitar errores de codificación o caracteres ilegales en SQL.
+    """
+    if isinstance(value, str):
+        # Asegura UTF-8 válido y escapa comillas simples
+        clean = value.encode("utf-8", errors="ignore").decode("utf-8")
+        clean = clean.replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+        return clean
+    return value
 
 def safe_stream(query, max_attempts=5, base_backoff=1.0):
     """Ejecuta un query Firestore con reintento y backoff exponencial."""
@@ -445,7 +455,9 @@ def export_firestore_to_bigquery(request):
     temp_file_path = '/tmp/firestore_data.json'
     with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
         for doc in example_docs:
-            json_line = json.dumps({k: serialize_value(v) for k, v in doc.items()}, ensure_ascii=False)
+            # Limpia cada valor con safe_sql_string + serialize_value
+            clean_doc = {k: safe_sql_string(serialize_value(v)) for k, v in doc.items()}
+            json_line = json.dumps(clean_doc, ensure_ascii=False)
             temp_file.write(json_line + '\n')
 
     print('📝 Archivo JSON temporal creado:', temp_file_path)
