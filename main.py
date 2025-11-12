@@ -545,7 +545,7 @@ def export_firestore_to_bigquery(request):
         merge_sql = f"""
             MERGE `{var_dataset_id}.{var_table_id}` T
             USING `{var_dataset_id}.{temp_table_id}` S
-            ON T.document_path = S.document_path
+            ON T.id = S.id
             WHEN MATCHED THEN UPDATE SET {', '.join([f'T.{f} = S.{f}' for f in fields])}
             WHEN NOT MATCHED THEN INSERT ({', '.join(fields)}) VALUES ({', '.join([f'S.{f}' for f in fields])})
         """
