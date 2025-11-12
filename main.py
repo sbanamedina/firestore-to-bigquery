@@ -206,6 +206,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     collection_ref = firestore_client.collection(collection_name)
     last_doc = None
     can_order_by_updated_field = True
+    fallback_by_name = False
 
     # -----------------------
     # Filtro incremental robusto
@@ -246,6 +247,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 print(f"⚠️ Tipo de campo {updated_field} no soportado, filtro omitido.")
                 sys.stdout.flush()
                 can_order_by_updated_field = False
+                fallback_by_name = True
         except Exception as e:
             print(f"⚠️ No se pudo aplicar filtro por {updated_field}: {e}")
             sys.stdout.flush()
@@ -253,12 +255,16 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     # Paginación y procesamiento de documentos
     # -----------------------
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        effective_page_size = page_size if can_order_by_updated_field else min(page_size, 500)
+        if fallback_by_name:
+            print(f"🔁 Fallback activo: ordenando por __name__ con page_size={effective_page_size}")
+            sys.stdout.flush()
         while True:
             # Si el tipo del campo no es confiable, ordena por __name__ para garantizar resultados
             if updated_field and can_order_by_updated_field:
-                query = collection_ref.order_by(updated_field).limit(page_size)
+                query = collection_ref.order_by(updated_field).limit(effective_page_size)
             else:
-                query = collection_ref.order_by("__name__").limit(page_size)
+                query = collection_ref.order_by("__name__").limit(effective_page_size)
 
             if last_doc:
                 # Paginar usando el snapshot para evitar cursores compuestos
