@@ -224,9 +224,10 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
             # sample_value = sample_doc.to_dict().get(updated_field) if sample_doc else None
 
             # -----------------------
-            # Obtener varias muestras para detectar formato 
+            # Obtener varias muestras para detectar formato y fecha más reciente
             # -----------------------
-            docs = list(collection_ref.limit(20).stream())
+            sample_limit = 200  # aumentar el tamaño de muestra
+            docs = list(collection_ref.limit(sample_limit).stream())
             sample_values = []
 
             for d in docs:
@@ -239,31 +240,26 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 sys.stdout.flush()
                 return [], []
 
-            # Buscar la muestra más representativa (más reciente o más completa)
-            sample_value = None
-            if sample_values:
-                parsed_samples = []
-                for s in sample_values:
-                    try:
-                        parsed = parser.parse(s, fuzzy=True)
-                        parsed_samples.append((parsed, s))
-                    except Exception:
-                        continue
+            parsed_samples = []
+            for s in sample_values:
+                try:
+                    parsed = parser.parse(s, fuzzy=True)
+                    parsed_samples.append((parsed, s))
+                except Exception:
+                    continue
 
-                if parsed_samples:
-                    # Elegir la más reciente (fecha máxima)
-                    sample_value = max(parsed_samples, key=lambda x: x[0])[1]
-                    print(f"🔹 Muestra representativa más reciente del campo {updated_field}: {sample_value}")
-                    sys.stdout.flush()
-                else:
-                    # Si ninguna se pudo parsear, toma la más larga como fallback
-                    sample_value = max(sample_values, key=len)
-                    print(f"⚠️ No se pudieron parsear las muestras, usando fallback: {sample_value}")
-                    sys.stdout.flush()
-            else:
-                print(f"⚠️ No se encontraron valores de muestra para {updated_field}")
+            if parsed_samples:
+                # Tomar la fecha más reciente (máxima)
+                parsed_samples.sort(key=lambda x: x[0], reverse=True)
+                sample_value = parsed_samples[0][1]
+                sample_date = parsed_samples[0][0]
+                print(f"🔹 Muestra representativa más reciente del campo {updated_field}: {sample_value} (detectada como {sample_date})")
                 sys.stdout.flush()
-                return [], []
+            else:
+                # fallback si ninguna fecha se puede parsear
+                sample_value = max(sample_values, key=len)
+                print(f"⚠️ No se pudieron parsear las muestras, usando fallback: {sample_value}")
+                sys.stdout.flush()
 
 
             # --- Detección de tipo de campo y aplicación de filtro ---
