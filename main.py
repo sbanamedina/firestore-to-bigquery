@@ -244,20 +244,19 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
             #     print(f"🧭 Campo {updated_field} detectado como STRING con formato SQL, filtro aplicado: {updated_after_str} → {updated_before_str}")
             #     sys.stdout.flush()
             elif isinstance(sample_value, str):
-                # Si el campo contiene una zona horaria o no está en formato ISO ordenable, no aplicar filtro directo
-                if re.search(r"[A-Z]{2,4}$", str(sample_value)) or not re.match(r"^\d{4}-\d{2}-\d{2}", str(sample_value)):
-                    print(f"⚠️ Campo {updated_field} es STRING con formato no ordenable (ej: con zona horaria), se omitirá filtro Firestore y se filtrará en Python.")
-                    pass  # no aplica filtro Firestore
+                # Detección de strings con zonas horarias o formatos no comparables
+                sample_str = str(sample_value).strip()
+                if re.search(r"\b(UTC|GMT|CST|EST|PST|AM|PM)\b", sample_str) or not re.match(r"^\d{4}-\d{2}-\d{2}", sample_str):
+                    print(f"⚠️ Campo {updated_field} es STRING con formato no ordenable o con zona horaria ('{sample_str}'), se omitirá filtro Firestore y se filtrará en Python.")
+                    sys.stdout.flush()
+                    pass  # No aplicar filtro Firestore
                 else:
                     if updated_after:
-                        updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
-                        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
+                        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
                     if updated_before:
-                        updated_before_str = updated_before.strftime("%Y-%m-%d %H:%M:%S")
-                        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
-                    print(f"🧭 Campo {updated_field} detectado como STRING con formato SQL, filtro aplicado: {updated_after_str} → {updated_before_str}")
+                        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before))
+                    print(f"🧭 Campo {updated_field} detectado como STRING con formato SQL, filtro aplicado.")
                     sys.stdout.flush()
-
             else:
                 print(f"⚠️ Tipo de campo {updated_field} no soportado, filtro omitido.")
                 sys.stdout.flush()
