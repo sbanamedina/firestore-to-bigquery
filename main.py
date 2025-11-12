@@ -130,47 +130,28 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
         return example_docs, fields
     doc_data = doc.to_dict()
 
-    # --- Validación incremental universal ---
-    if updated_after or updated_before:
-        if updated_field in doc_data and doc_data[updated_field]:
+    # Validar incremental
+    if updated_after and updated_field and updated_field in doc_data:
+        doc_value = doc_data[updated_field]
+
+        # Convertir valor a datetime si es string
+        if isinstance(doc_value, datetime):
+            doc_dt = doc_value
+        else:
             try:
-                # Intenta parsear cualquier formato de fecha
-                doc_value = parser.parse(str(doc_data[updated_field]), fuzzy=True, dayfirst=True)
-                if doc_value.tzinfo is None:
-                    doc_value = doc_value.replace(tzinfo=timezone.utc)
-                else:
-                    doc_value = doc_value.astimezone(timezone.utc)
-            except Exception as e:
-                print(f"⚠️ No se pudo parsear '{doc_data[updated_field]}' en {doc_ref.id}: {e}")
+                doc_dt = datetime.fromisoformat(str(doc_value))
+            except ValueError:
+                print(f"⚠️ No se pudo convertir {doc_value} a datetime, se omite comparación.")
                 return example_docs, fields
 
-            if updated_after and doc_value <= updated_after:
-                return example_docs, fields
-            if updated_before and doc_value > updated_before:
-                return example_docs, fields
+        # Normalizar zonas horarias
+        if doc_dt.tzinfo is None:
+            doc_dt = doc_dt.replace(tzinfo=timezone.utc)
+        if updated_after.tzinfo is None:
+            updated_after = updated_after.replace(tzinfo=timezone.utc)
 
-    # # Validar incremental
-    # if updated_after and updated_field and updated_field in doc_data:
-    #     doc_value = doc_data[updated_field]
-
-    #     # Convertir valor a datetime si es string
-    #     if isinstance(doc_value, datetime):
-    #         doc_dt = doc_value
-    #     else:
-    #         try:
-    #             doc_dt = datetime.fromisoformat(str(doc_value))
-    #         except ValueError:
-    #             print(f"⚠️ No se pudo convertir {doc_value} a datetime, se omite comparación.")
-    #             return example_docs, fields
-
-    #     # Normalizar zonas horarias
-    #     if doc_dt.tzinfo is None:
-    #         doc_dt = doc_dt.replace(tzinfo=timezone.utc)
-    #     if updated_after.tzinfo is None:
-    #         updated_after = updated_after.replace(tzinfo=timezone.utc)
-
-    #     if doc_dt <= updated_after:
-    #         return example_docs, fields
+        if doc_dt <= updated_after:
+            return example_docs, fields
 
     doc_data['id'] = doc.id
     doc_data['document_path'] = parent_path + sep + doc.id
