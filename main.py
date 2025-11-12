@@ -279,53 +279,60 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     # -----------------------
     # Paginación y procesamiento de documentos
     # -----------------------
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        while True:
-            if updated_field:
-                query = collection_ref.order_by(updated_field).order_by("__name__").limit(page_size)
-            else:
-                query = collection_ref.order_by("__name__").limit(page_size)
-            
-            if last_doc:
-                last_value = last_doc.to_dict().get(updated_field)
-                if last_value is not None:
-                    query = query.start_after({updated_field: last_value, "__name__": last_doc.id})
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            while True:
+                if updated_field:
+                    query = collection_ref.order_by(updated_field).order_by("__name__").limit(page_size)
                 else:
-                    query = query.start_after({"__name__": last_doc.id})
+                    query = collection_ref.order_by("__name__").limit(page_size)
+                
+                if last_doc:
+                    last_value = last_doc.to_dict().get(updated_field)
+                    if last_value is not None:
+                        query = query.start_after({updated_field: last_value, "__name__": last_doc.id})
+                    else:
+                        query = query.start_after({"__name__": last_doc.id})
 
-            docs = list(query.stream())
-            if not docs:
-                break
+                docs = list(query.stream())
+                if not docs:
+                    break
 
-            batch_docs = []
-            futures = [
-                executor.submit(
-                    process_document,
-                    firestore_client,
-                    doc.reference,
-                    f"{collection_name}{sep}{doc.id}",
-                    sep,
-                    max_level,
-                    handle_subcollections,
-                    updated_after,
-                    updated_field
-                )
-                for doc in docs
-            ]
-            for future in concurrent.futures.as_completed(futures):
-                doc_docs, doc_fields = future.result()
-                batch_docs.extend(doc_docs)
-                fields.update(doc_fields)
+                batch_docs = []
+                futures = [
+                    executor.submit(
+                        process_document,
+                        firestore_client,
+                        doc.reference,
+                        f"{collection_name}{sep}{doc.id}",
+                        sep,
+                        max_level,
+                        handle_subcollections,
+                        updated_after,
+                        updated_before,
+                        updated_field
+                    )
+                    for doc in docs
+                ]
 
-            total_docs = len(example_docs) + len(batch_docs)
-            if total_docs % 500 == 0 or len(docs) < page_size:
-                print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
-                sys.stdout.flush()
+                for future in concurrent.futures.as_completed(futures):
+                    doc_docs, doc_fields = future.result()
+                    batch_docs.extend(doc_docs)
+                    fields.update(doc_fields)
 
-            last_doc = docs[-1]
-            example_docs.extend(batch_docs)
-            if len(docs) < page_size:
-                break
+                total_docs = len(example_docs) + len(batch_docs)
+                if total_docs % 500 == 0 or len(docs) < page_size:
+                    print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
+                    sys.stdout.flush()
+
+                last_doc = docs[-1]
+                example_docs.extend(batch_docs)
+                if len(docs) < page_size:
+                    break
+
+    except Exception as e:
+        print(f"⚠️ Error procesando colección {collection_name}: {e}")
+        sys.stdout.flush()
 
     return example_docs, fields
 
