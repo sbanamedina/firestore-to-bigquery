@@ -183,7 +183,7 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
     return example_docs, fields
 
 def process_collection(firestore_client, collection_name, sep='_', max_level=2, page_size=500,
-                       handle_subcollections=False, updated_after=None, updated_before=None, updated_field=None):
+                       handle_subcollections=False, updated_after=None, updated_before=None, updated_field=None, max_workers=32):
     fields = set()
     example_docs = []
     collection_ref = firestore_client.collection(collection_name)
@@ -233,7 +233,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     # -----------------------
     # Paginación y procesamiento de documentos
     # -----------------------
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         while True:
             # Ordenar solo por el campo filtrado para evitar índice compuesto
             query = collection_ref.order_by(updated_field).limit(page_size)
