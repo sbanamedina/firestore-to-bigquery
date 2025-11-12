@@ -573,7 +573,16 @@ def export_firestore_to_bigquery(request):
     # Procesar colección
     print(f"🔍 Procesando colección: {var_main_collection}")
     sys.stdout.flush()
-    example_docs, fields = process_collection(firestore_client,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_before=updated_before,updated_field=updated_field)
+    #example_docs, fields = process_collection(firestore_client,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_before=updated_before,updated_field=updated_field)
+    example_docs, fields = process_collection(
+        firestore_client,
+        var_main_collection,
+        updated_field,
+        updated_after,
+        updated_before,
+        handle_subcollections
+    )
+
     ###### Para colecciones que se bloquean
     #example_docs, fields = process_collection(firestore_client, bigquery_client,var_dataset_id,var_table_id,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_before=updated_before,updated_field=updated_field)
     ###############################
