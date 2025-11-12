@@ -274,6 +274,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                     max_level,
                     handle_subcollections,
                     updated_after,
+                    updated_before,
                     updated_field
                 )
                 for doc in docs
@@ -544,7 +545,7 @@ def export_firestore_to_bigquery(request):
         merge_sql = f"""
             MERGE `{var_dataset_id}.{var_table_id}` T
             USING `{var_dataset_id}.{temp_table_id}` S
-            ON T.id = S.id
+            ON T.document_path = S.document_path
             WHEN MATCHED THEN UPDATE SET {', '.join([f'T.{f} = S.{f}' for f in fields])}
             WHEN NOT MATCHED THEN INSERT ({', '.join(fields)}) VALUES ({', '.join([f'S.{f}' for f in fields])})
         """
