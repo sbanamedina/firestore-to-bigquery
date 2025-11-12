@@ -135,7 +135,7 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
         if updated_field in doc_data and doc_data[updated_field]:
             try:
                 # Intenta parsear cualquier formato de fecha
-                doc_value = parser.parse(str(doc_data[updated_field]), fuzzy=True)
+                doc_value = parser.parse(str(doc_data[updated_field]), fuzzy=True, dayfirst=True)
                 if doc_value.tzinfo is None:
                     doc_value = doc_value.replace(tzinfo=timezone.utc)
                 else:
@@ -232,17 +232,32 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 #collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
                 print(f"🧭 Campo {updated_field} detectado como TIMESTAMP, filtro aplicado.")
                 sys.stdout.flush()
+            # elif isinstance(sample_value, str):
+            #     # Campo tipo STRING con formato SQL "YYYY-MM-DD HH:MM:SS"
+            #     if updated_after:
+            #         updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
+            #         collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
+            #     if updated_before:
+            #         updated_before_str = updated_before.strftime("%Y-%m-%d %H:%M:%S")
+            #         collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
+            #     #collection_ref = collection_ref.order_by(updated_field)
+            #     print(f"🧭 Campo {updated_field} detectado como STRING con formato SQL, filtro aplicado: {updated_after_str} → {updated_before_str}")
+            #     sys.stdout.flush()
             elif isinstance(sample_value, str):
-                # Campo tipo STRING con formato SQL "YYYY-MM-DD HH:MM:SS"
-                if updated_after:
-                    updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
-                    collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
-                if updated_before:
-                    updated_before_str = updated_before.strftime("%Y-%m-%d %H:%M:%S")
-                    collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
-                #collection_ref = collection_ref.order_by(updated_field)
-                print(f"🧭 Campo {updated_field} detectado como STRING con formato SQL, filtro aplicado: {updated_after_str} → {updated_before_str}")
-                sys.stdout.flush()
+                # Si el campo contiene una zona horaria o no está en formato ISO ordenable, no aplicar filtro directo
+                if re.search(r"[A-Z]{2,4}$", str(sample_value)) or not re.match(r"^\d{4}-\d{2}-\d{2}", str(sample_value)):
+                    print(f"⚠️ Campo {updated_field} es STRING con formato no ordenable (ej: con zona horaria), se omitirá filtro Firestore y se filtrará en Python.")
+                    pass  # no aplica filtro Firestore
+                else:
+                    if updated_after:
+                        updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
+                        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
+                    if updated_before:
+                        updated_before_str = updated_before.strftime("%Y-%m-%d %H:%M:%S")
+                        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
+                    print(f"🧭 Campo {updated_field} detectado como STRING con formato SQL, filtro aplicado: {updated_after_str} → {updated_before_str}")
+                    sys.stdout.flush()
+
             else:
                 print(f"⚠️ Tipo de campo {updated_field} no soportado, filtro omitido.")
                 sys.stdout.flush()
