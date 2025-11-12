@@ -202,14 +202,11 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
     return example_docs, fields
 
 def process_collection(firestore_client, collection_name, sep='_', max_level=2, page_size=500,
-                       handle_subcollections=False, updated_after=None, updated_before=None, updated_field=None, max_workers=32):
+                       handle_subcollections=False, updated_after=None, updated_before=None, updated_field=None):
     fields = set()
     example_docs = []
     collection_ref = firestore_client.collection(collection_name)
     last_doc = None
-    can_order_by_updated_field = True
-    server_side_filter_applied = False
-    should_run_primary_pagination = True
 
     # -----------------------
     # Filtro incremental robusto
@@ -221,220 +218,86 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 updated_before = datetime.now(timezone.utc)
                 print(f"🔹 No se proporcionó updated_before, se usará ahora como límite superior: {updated_before}")
                 sys.stdout.flush()
-                
+
             # Obtener un valor de ejemplo
-            # sample_doc = next(firestore_client.collection(collection_name).limit(1).stream(), None)
-            # sample_value = sample_doc.to_dict().get(updated_field) if sample_doc else None
+            sample_doc = next(firestore_client.collection(collection_name).limit(1).stream(), None)
+            sample_value = sample_doc.to_dict().get(updated_field) if sample_doc else None
 
-            # -----------------------
-            # Obtener varias muestras para detectar formato y fecha más reciente
-            # -----------------------
-            sample_limit = 200  
-            half = max(1, sample_limit // 2)
-            # Tomamos muestras de ambos extremos por __name__: ascendente (inicio) y descendente (final)
-            docs_asc = list(collection_ref.order_by("__name__").limit(half).stream())
-            docs_desc = list(collection_ref.order_by("__name__", direction=firestore.Query.DESCENDING).limit(half).stream())
-            # Unimos y deduplicamos por id
-            seen_ids = set()
-            docs = []
-            for d in docs_asc + docs_desc:
-                if d.id in seen_ids:
-                    continue
-                seen_ids.add(d.id)
-                docs.append(d)
-            value_samples = [] 
-
-            for d in docs:
-                val = d.to_dict().get(updated_field)
-                if val is not None:
-                    value_samples.append((val, str(val)))
-
-            if not value_samples:
-                print(f"⚠️ No se encontraron valores de muestra para {updated_field}")
-                sys.stdout.flush()
-                return [], []
-
-            parsed_samples = [] 
-            for raw, s in value_samples:
-                try:
-                    parsed = parser.parse(s, fuzzy=True)
-                    parsed_samples.append((parsed, raw, s))
-                except Exception:
-                    continue
-
-            if parsed_samples:
-                # Tomar la fecha más reciente (máxima)
-                parsed_samples.sort(key=lambda x: x[0], reverse=True)
-                sample_raw_value = parsed_samples[0][1]
-                sample_value_str = parsed_samples[0][2]
-                sample_date = parsed_samples[0][0]
-                print(f"🔹 Muestra representativa más reciente entre {len(parsed_samples)} muestras para {updated_field}: {sample_value_str} (detectada como {sample_date})")
-                sys.stdout.flush()
-            else:
-                # fallback si ninguna fecha se puede parsear
-                longest = max(value_samples, key=lambda t: len(t[1]))  # by string length
-                sample_raw_value, sample_value_str = longest
-                print(f"⚠️ No se pudieron parsear las muestras (n={len(value_samples)}), usando fallback: {sample_value_str}")
-                sys.stdout.flush()
-
-
-            # --- Detección de tipo de campo y aplicación de filtro ---
-            if isinstance(sample_raw_value, str):
-                sample_str = sample_value_str.strip()
-                if re.search(r"\b(UTC|GMT|CST|EST|PST|AM|PM)\b", sample_str) or not re.match(r"^\d{4}-\d{2}-\d{2}", sample_str):
-                    print(f"⚠️ Campo {updated_field} es STRING con formato no ordenable ('{sample_str}'), se omitirá filtro Firestore y se filtrará en Python.")
-                    sys.stdout.flush()
-                    can_order_by_updated_field = False
-                else:
-                    updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S") if updated_after else None
-                    updated_before_str = updated_before.strftime("%Y-%m-%d %H:%M:%S") if updated_before else None
-                    if updated_after:
-                        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
-                        server_side_filter_applied = True
-                    if updated_before:
-                        collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
-                        server_side_filter_applied = True
-                    print(f"🧭 Campo {updated_field} detectado como STRING SQL, filtro aplicado: {updated_after_str or 'None'} → {updated_before_str or 'None'}")
-                    sys.stdout.flush()
-            elif isinstance(sample_raw_value, datetime):
+            if isinstance(sample_value, datetime):
+                # Campo tipo Timestamp
                 if updated_after:
                     collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
-                    server_side_filter_applied = True
                 if updated_before:
                     collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before))
-                    server_side_filter_applied = True
-                print(f"🕓 Campo {updated_field} detectado como TIMESTAMP, filtro aplicado directamente.")
+                #collection_ref = collection_ref.order_by(updated_field).order_by("__name__")
+                print(f"🧭 Campo {updated_field} detectado como TIMESTAMP, filtro aplicado.")
+                sys.stdout.flush()
+            elif isinstance(sample_value, str):
+                # Campo tipo STRING con formato SQL "YYYY-MM-DD HH:MM:SS"
+                if updated_after:
+                    updated_after_str = updated_after.strftime("%Y-%m-%d %H:%M:%S")
+                    collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
+                if updated_before:
+                    updated_before_str = updated_before.strftime("%Y-%m-%d %H:%M:%S")
+                    collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
+                #collection_ref = collection_ref.order_by(updated_field)
+                print(f"🧭 Campo {updated_field} detectado como STRING con formato SQL, filtro aplicado: {updated_after_str} → {updated_before_str}")
                 sys.stdout.flush()
             else:
-                print(f"⚠️ Tipo de campo {type(sample_value)} no reconocido, se omitirá filtro Firestore.")
+                print(f"⚠️ Tipo de campo {updated_field} no soportado, filtro omitido.")
                 sys.stdout.flush()
-                can_order_by_updated_field = False
         except Exception as e:
-            msg = str(e)
-            if "requires an index" in msg or "query requires an index" in msg:
-                print("⚠️ El filtro incremental en Firestore requiere un índice compuesto; se omitirá filtro en servidor y se filtrará en Python.")
-                sys.stdout.flush()
-                # Reestablecer referencia de colección sin filtros para evitar errores posteriores
-                collection_ref = firestore_client.collection(collection_name)
-                can_order_by_updated_field = False
-                server_side_filter_applied = False
-                should_run_primary_pagination = False  # saltar el bucle primario y usar fallback
-            else:
-                print(f"⚠️ Error aplicando filtro incremental: {e}")
-                sys.stdout.flush()
-
+            print(f"⚠️ No se pudo aplicar filtro por {updated_field}: {e}")
+            sys.stdout.flush()
     # -----------------------
     # Paginación y procesamiento de documentos
     # -----------------------
-    if should_run_primary_pagination:
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                while True:
-                    if updated_field and can_order_by_updated_field:
-                        # Evitar índice compuesto: ordenar solo por el campo filtrado
-                        query = collection_ref.order_by(updated_field).limit(page_size)
-                    else:
-                        query = collection_ref.order_by("__name__").limit(page_size)
-                    
-                    if last_doc:
-                        # Usar snapshot para evitar construir cursores compuestos
-                        query = query.start_after(last_doc)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        while True:
+            query = collection_ref.order_by(updated_field).order_by("__name__").limit(page_size)
 
-                    docs = list(query.stream())
-                    if not docs:
-                        break
+            if last_doc:
+                last_value = last_doc.to_dict().get(updated_field)
+                if last_value is not None:
+                    query = query.start_after({updated_field: last_value, "__name__": last_doc.id})
+                else:
+                    query = query.start_after({"__name__": last_doc.id})
 
-                    batch_docs = []
-                    futures = [
-                        executor.submit(
-                            process_document,
-                            firestore_client,
-                            doc.reference,
-                            f"{collection_name}{sep}{doc.id}",
-                            sep,
-                            max_level,
-                            handle_subcollections,
-                            updated_after,
-                            updated_before,
-                            updated_field
-                        )
-                        for doc in docs
-                    ]
+            docs = list(query.stream())
+            if not docs:
+                break
 
-                    for future in concurrent.futures.as_completed(futures):
-                        doc_docs, doc_fields = future.result()
-                        batch_docs.extend(doc_docs)
-                        fields.update(doc_fields)
+            batch_docs = []
+            futures = [
+                executor.submit(
+                    process_document,
+                    firestore_client,
+                    doc.reference,
+                    f"{collection_name}{sep}{doc.id}",
+                    sep,
+                    max_level,
+                    handle_subcollections,
+                    updated_after,
+                    updated_field
+                )
+                for doc in docs
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                doc_docs, doc_fields = future.result()
+                batch_docs.extend(doc_docs)
+                fields.update(doc_fields)
 
-                    total_docs = len(example_docs) + len(batch_docs)
-                    if total_docs % 500 == 0 or len(docs) < page_size:
-                        print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
-                        sys.stdout.flush()
+            total_docs = len(example_docs) + len(batch_docs)
+            if total_docs % 500 == 0 or len(docs) < page_size:
+                print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
+                sys.stdout.flush()
 
-                    last_doc = docs[-1]
-                    example_docs.extend(batch_docs)
-                    if len(docs) < page_size:
-                        break
-
-        except Exception as e:
-            print(f"⚠️ Error procesando colección {collection_name}: {e}")
-            sys.stdout.flush()
-
-    # Fallback: si no hubo resultados con el filtro en Firestore (posible mezcla de tipos),
-    # reintentar sin filtro en servidor y filtrar en Python dentro de process_document.
-    if not example_docs and updated_field and (updated_after or updated_before):
-        print("⚠️ Sin coincidencias con filtro en Firestore; se aplicará filtrado en Python (posible mezcla de tipos).")
-        sys.stdout.flush()
-        try:
-            last_doc = None
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                while True:
-                    query = firestore_client.collection(collection_name).order_by("__name__").limit(page_size)
-
-                    if last_doc:
-                        query = query.start_after(last_doc)
-
-                    docs = list(query.stream())
-                    if not docs:
-                        break
-
-                    batch_docs = []
-                    futures = [
-                        executor.submit(
-                            process_document,
-                            firestore_client,
-                            doc.reference,
-                            f"{collection_name}{sep}{doc.id}",
-                            sep,
-                            max_level,
-                            handle_subcollections,
-                            updated_after,
-                            updated_before,
-                            updated_field
-                        )
-                        for doc in docs
-                    ]
-
-                    for future in concurrent.futures.as_completed(futures):
-                        doc_docs, doc_fields = future.result()
-                        batch_docs.extend(doc_docs)
-                        fields.update(doc_fields)
-
-                    total_docs = len(example_docs) + len(batch_docs)
-                    if total_docs % 500 == 0 or len(docs) < page_size:
-                        print(f"📊 Progreso (fallback): {total_docs} documentos procesados hasta ahora...")
-                        sys.stdout.flush()
-
-                    last_doc = docs[-1]
-                    example_docs.extend(batch_docs)
-                    if len(docs) < page_size:
-                        break
-        except Exception as e:
-            print(f"⚠️ Error en fallback de filtrado en Python: {e}")
-            sys.stdout.flush()
+            last_doc = docs[-1]
+            example_docs.extend(batch_docs)
+            if len(docs) < page_size:
+                break
 
     return example_docs, fields
-
 
 # -------------------------------
 # Control de ejecución duplicada en BigQuery
