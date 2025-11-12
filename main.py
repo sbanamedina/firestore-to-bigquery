@@ -19,7 +19,6 @@ from google.api_core.exceptions import ServiceUnavailable, DeadlineExceeded, Goo
 from google.cloud.firestore_v1.base_query import FieldFilter
 import unicodedata
 from dateutil import parser
-import gzip
 
 
 def safe_sql_string(value):
@@ -619,23 +618,23 @@ def export_firestore_to_bigquery(request):
     print(f"✅ Documentos extraídos: {len(example_docs)}")
     sys.stdout.flush()
 
-    print('📝 Creando archivo JSONL comprimido (GZIP) temporal...')
+    print('📝 Creando archivo JSONL temporal...')
     sys.stdout.flush()
 
-    temp_file_path = '/tmp/firestore_data.json.gz'
-    with gzip.open(temp_file_path, 'wt', encoding='utf-8') as temp_file:
+    temp_file_path = '/tmp/firestore_data.json'
+    with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
         for doc in example_docs:
             # Limpia cada valor con safe_sql_string + serialize_value
             clean_doc = {k: safe_sql_string(serialize_value(v)) for k, v in doc.items()}
             json_line = json.dumps(clean_doc, ensure_ascii=False)
             temp_file.write(json_line + '\n')
 
-    print('📝 Archivo JSONL GZIP temporal creado:', temp_file_path)
+    print('📝 Archivo JSONL temporal creado:', temp_file_path)
     sys.stdout.flush()
 
     # Verificación opcional de formato NDJSON (solo logs)
     try:
-        with gzip.open(temp_file_path, 'rt', encoding='utf-8') as check_file:
+        with open(temp_file_path, 'r', encoding='utf-8') as check_file:
             first_line = check_file.readline().strip()
             if first_line:
                 json.loads(first_line)
@@ -670,8 +669,7 @@ def export_firestore_to_bigquery(request):
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         autodetect=True,
-        max_bad_records=50,
-        compression=bigquery.Compression.GZIP
+        max_bad_records=50
     )
     with open(temp_file_path, "rb") as source_file:
         print('📝 Cargando tabla temporal...')
@@ -750,8 +748,7 @@ def export_firestore_to_bigquery(request):
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
             autodetect=True,
-            max_bad_records=50,
-            compression=bigquery.Compression.GZIP
+            max_bad_records=50
         )
         with open(temp_file_path, "rb") as source_file:
             bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
