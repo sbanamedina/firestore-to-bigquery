@@ -228,7 +228,18 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
             # Obtener varias muestras para detectar formato y fecha más reciente
             # -----------------------
             sample_limit = 200  
-            docs = list(collection_ref.limit(sample_limit).stream())
+            half = max(1, sample_limit // 2)
+            # Tomamos muestras de ambos extremos por __name__: ascendente (inicio) y descendente (final)
+            docs_asc = list(collection_ref.order_by("__name__").limit(half).stream())
+            docs_desc = list(collection_ref.order_by("__name__", direction=firestore.Query.DESCENDING).limit(half).stream())
+            # Unimos y deduplicamos por id
+            seen_ids = set()
+            docs = []
+            for d in docs_asc + docs_desc:
+                if d.id in seen_ids:
+                    continue
+                seen_ids.add(d.id)
+                docs.append(d)
             value_samples = [] 
 
             for d in docs:
@@ -255,13 +266,13 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 sample_raw_value = parsed_samples[0][1]
                 sample_value_str = parsed_samples[0][2]
                 sample_date = parsed_samples[0][0]
-                print(f"🔹 Muestra representativa más reciente del campo {updated_field}: {sample_value_str} (detectada como {sample_date})")
+                print(f"🔹 Muestra representativa más reciente entre {len(parsed_samples)} muestras para {updated_field}: {sample_value_str} (detectada como {sample_date})")
                 sys.stdout.flush()
             else:
                 # fallback si ninguna fecha se puede parsear
                 longest = max(value_samples, key=lambda t: len(t[1]))  # by string length
                 sample_raw_value, sample_value_str = longest
-                print(f"⚠️ No se pudieron parsear las muestras, usando fallback: {sample_value_str}")
+                print(f"⚠️ No se pudieron parsear las muestras (n={len(value_samples)}), usando fallback: {sample_value_str}")
                 sys.stdout.flush()
 
 
