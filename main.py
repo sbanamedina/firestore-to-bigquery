@@ -275,6 +275,9 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
             else:
                 print(f"⚠️ Tipo de campo {type(sample_value)} no reconocido, se omitirá filtro Firestore.")
                 sys.stdout.flush()
+        except Exception as e:
+            print(f"⚠️ Error aplicando filtro incremental: {e}")
+            sys.stdout.flush()
 
     # -----------------------
     # Paginación y procesamiento de documentos
