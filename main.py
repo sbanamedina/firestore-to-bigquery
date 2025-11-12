@@ -19,6 +19,7 @@ from google.api_core.exceptions import ServiceUnavailable, DeadlineExceeded, Goo
 from google.cloud.firestore_v1.base_query import FieldFilter
 import unicodedata
 from dateutil import parser
+import gzip
 
 
 def safe_sql_string(value):
@@ -202,7 +203,7 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
     return example_docs, fields
 
 def process_collection(firestore_client, collection_name, sep='_', max_level=2, page_size=500,
-                       handle_subcollections=False, updated_after=None, updated_before=None, updated_field=None):
+                       handle_subcollections=False, updated_after=None, updated_before=None, updated_field=None, max_workers=32):
     fields = set()
     example_docs = []
     collection_ref = firestore_client.collection(collection_name)
@@ -328,7 +329,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     # -----------------------
     if should_run_primary_pagination:
         try:
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 while True:
                     if updated_field and can_order_by_updated_field:
                         # Evitar índice compuesto: ordenar solo por el campo filtrado
@@ -387,7 +388,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
         sys.stdout.flush()
         try:
             last_doc = None
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 while True:
                     query = firestore_client.collection(collection_name).order_by("__name__").limit(page_size)
 
@@ -549,7 +550,8 @@ def export_firestore_to_bigquery(request):
     var_database = request_json.get('database', '(default)')
     updated_field = request_json.get('updated_field')  # Nombre del campo en Firestore
     full_export = request_json.get('full_export', False)
-    page_size = request_json.get('page_size', 500)
+    page_size = request_json.get('page_size', 2000)
+    max_workers = request_json.get('max_workers', 32)
     print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
     sys.stdout.flush()
     
@@ -604,7 +606,7 @@ def export_firestore_to_bigquery(request):
     # Procesar colección
     print(f"🔍 Procesando colección: {var_main_collection}")
     sys.stdout.flush()
-    example_docs, fields = process_collection(firestore_client,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_before=updated_before,updated_field=updated_field)
+    example_docs, fields = process_collection(firestore_client,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_before=updated_before,updated_field=updated_field, max_workers=max_workers)
  
     ###### Para colecciones que se bloquean
     #example_docs, fields = process_collection(firestore_client, bigquery_client,var_dataset_id,var_table_id,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_before=updated_before,updated_field=updated_field)
@@ -617,23 +619,23 @@ def export_firestore_to_bigquery(request):
     print(f"✅ Documentos extraídos: {len(example_docs)}")
     sys.stdout.flush()
 
-    print('📝 Creando archivo JSON temporal...')
+    print('📝 Creando archivo JSONL comprimido (GZIP) temporal...')
     sys.stdout.flush()
 
-    temp_file_path = '/tmp/firestore_data.json'
-    with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
+    temp_file_path = '/tmp/firestore_data.json.gz'
+    with gzip.open(temp_file_path, 'wt', encoding='utf-8') as temp_file:
         for doc in example_docs:
             # Limpia cada valor con safe_sql_string + serialize_value
             clean_doc = {k: safe_sql_string(serialize_value(v)) for k, v in doc.items()}
             json_line = json.dumps(clean_doc, ensure_ascii=False)
             temp_file.write(json_line + '\n')
 
-    print('📝 Archivo JSON temporal creado:', temp_file_path)
+    print('📝 Archivo JSONL GZIP temporal creado:', temp_file_path)
     sys.stdout.flush()
 
     # Verificación opcional de formato NDJSON (solo logs)
     try:
-        with open(temp_file_path, 'r', encoding='utf-8') as check_file:
+        with gzip.open(temp_file_path, 'rt', encoding='utf-8') as check_file:
             first_line = check_file.readline().strip()
             if first_line:
                 json.loads(first_line)
@@ -668,7 +670,8 @@ def export_firestore_to_bigquery(request):
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         autodetect=True,
-        max_bad_records=50
+        max_bad_records=50,
+        compression=bigquery.Compression.GZIP
     )
     with open(temp_file_path, "rb") as source_file:
         print('📝 Cargando tabla temporal...')
@@ -747,7 +750,8 @@ def export_firestore_to_bigquery(request):
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
             autodetect=True,
-            max_bad_records=50
+            max_bad_records=50,
+            compression=bigquery.Compression.GZIP
         )
         with open(temp_file_path, "rb") as source_file:
             bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
