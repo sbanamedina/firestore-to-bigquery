@@ -130,28 +130,45 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
         return example_docs, fields
     doc_data = doc.to_dict()
 
-    # Validar incremental
-    if updated_after and updated_field and updated_field in doc_data:
-        doc_value = doc_data[updated_field]
+    # Validación incremental robusta (incluye updated_before y múltiples formatos)
+    if (updated_after or updated_before) and updated_field:
+        if updated_field in doc_data and doc_data[updated_field]:
+            doc_value = doc_data[updated_field]
 
-        # Convertir valor a datetime si es string
-        if isinstance(doc_value, datetime):
-            doc_dt = doc_value
-        else:
-            try:
-                doc_dt = datetime.fromisoformat(str(doc_value))
-            except ValueError:
-                print(f"⚠️ No se pudo convertir {doc_value} a datetime, se omite comparación.")
-                return example_docs, fields
+            parsed_dt = None
+            if isinstance(doc_value, datetime):
+                parsed_dt = doc_value
+            elif isinstance(doc_value, (int, float)):
+                # Interpretar numérico como epoch (ms si es muy grande)
+                ts = float(doc_value)
+                if ts > 1e12:  # milisegundos
+                    ts = ts / 1000.0
+                try:
+                    parsed_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                except Exception:
+                    parsed_dt = None
+            else:
+                try:
+                    parsed_dt = parser.parse(str(doc_value), fuzzy=True, dayfirst=True)
+                except Exception:
+                    print(f"⚠️ No se pudo parsear '{doc_value}' en {doc_ref.id}; se incluirá por seguridad.")
+                    parsed_dt = None
 
-        # Normalizar zonas horarias
-        if doc_dt.tzinfo is None:
-            doc_dt = doc_dt.replace(tzinfo=timezone.utc)
-        if updated_after.tzinfo is None:
-            updated_after = updated_after.replace(tzinfo=timezone.utc)
+            if parsed_dt is not None:
+                # Normalizar zona horaria
+                if parsed_dt.tzinfo is None:
+                    parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                else:
+                    parsed_dt = parsed_dt.astimezone(timezone.utc)
 
-        if doc_dt <= updated_after:
-            return example_docs, fields
+                if updated_after:
+                    ua = updated_after if updated_after.tzinfo else updated_after.replace(tzinfo=timezone.utc)
+                    if parsed_dt <= ua:
+                        return example_docs, fields
+                if updated_before:
+                    ub = updated_before if updated_before.tzinfo else updated_before.replace(tzinfo=timezone.utc)
+                    if parsed_dt > ub:
+                        return example_docs, fields
 
     doc_data['id'] = doc.id
     doc_data['document_path'] = parent_path + sep + doc.id
