@@ -209,6 +209,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     last_doc = None
     can_order_by_updated_field = True
     server_side_filter_applied = False
+    should_run_primary_pagination = True
 
     # -----------------------
     # Filtro incremental robusto
@@ -309,64 +310,75 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 sys.stdout.flush()
                 can_order_by_updated_field = False
         except Exception as e:
-            print(f"⚠️ Error aplicando filtro incremental: {e}")
-            sys.stdout.flush()
+            msg = str(e)
+            if "requires an index" in msg or "query requires an index" in msg:
+                print("⚠️ El filtro incremental en Firestore requiere un índice compuesto; se omitirá filtro en servidor y se filtrará en Python.")
+                sys.stdout.flush()
+                # Reestablecer referencia de colección sin filtros para evitar errores posteriores
+                collection_ref = firestore_client.collection(collection_name)
+                can_order_by_updated_field = False
+                server_side_filter_applied = False
+                should_run_primary_pagination = False  # saltar el bucle primario y usar fallback
+            else:
+                print(f"⚠️ Error aplicando filtro incremental: {e}")
+                sys.stdout.flush()
 
     # -----------------------
     # Paginación y procesamiento de documentos
     # -----------------------
-    try:
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            while True:
-                if updated_field and can_order_by_updated_field:
-                    # Evitar índice compuesto: ordenar solo por el campo filtrado
-                    query = collection_ref.order_by(updated_field).limit(page_size)
-                else:
-                    query = collection_ref.order_by("__name__").limit(page_size)
-                
-                if last_doc:
-                    # Usar snapshot para evitar construir cursores compuestos
-                    query = query.start_after(last_doc)
+    if should_run_primary_pagination:
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                while True:
+                    if updated_field and can_order_by_updated_field:
+                        # Evitar índice compuesto: ordenar solo por el campo filtrado
+                        query = collection_ref.order_by(updated_field).limit(page_size)
+                    else:
+                        query = collection_ref.order_by("__name__").limit(page_size)
+                    
+                    if last_doc:
+                        # Usar snapshot para evitar construir cursores compuestos
+                        query = query.start_after(last_doc)
 
-                docs = list(query.stream())
-                if not docs:
-                    break
+                    docs = list(query.stream())
+                    if not docs:
+                        break
 
-                batch_docs = []
-                futures = [
-                    executor.submit(
-                        process_document,
-                        firestore_client,
-                        doc.reference,
-                        f"{collection_name}{sep}{doc.id}",
-                        sep,
-                        max_level,
-                        handle_subcollections,
-                        updated_after,
-                        updated_before,
-                        updated_field
-                    )
-                    for doc in docs
-                ]
+                    batch_docs = []
+                    futures = [
+                        executor.submit(
+                            process_document,
+                            firestore_client,
+                            doc.reference,
+                            f"{collection_name}{sep}{doc.id}",
+                            sep,
+                            max_level,
+                            handle_subcollections,
+                            updated_after,
+                            updated_before,
+                            updated_field
+                        )
+                        for doc in docs
+                    ]
 
-                for future in concurrent.futures.as_completed(futures):
-                    doc_docs, doc_fields = future.result()
-                    batch_docs.extend(doc_docs)
-                    fields.update(doc_fields)
+                    for future in concurrent.futures.as_completed(futures):
+                        doc_docs, doc_fields = future.result()
+                        batch_docs.extend(doc_docs)
+                        fields.update(doc_fields)
 
-                total_docs = len(example_docs) + len(batch_docs)
-                if total_docs % 500 == 0 or len(docs) < page_size:
-                    print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
-                    sys.stdout.flush()
+                    total_docs = len(example_docs) + len(batch_docs)
+                    if total_docs % 500 == 0 or len(docs) < page_size:
+                        print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
+                        sys.stdout.flush()
 
-                last_doc = docs[-1]
-                example_docs.extend(batch_docs)
-                if len(docs) < page_size:
-                    break
+                    last_doc = docs[-1]
+                    example_docs.extend(batch_docs)
+                    if len(docs) < page_size:
+                        break
 
-    except Exception as e:
-        print(f"⚠️ Error procesando colección {collection_name}: {e}")
-        sys.stdout.flush()
+        except Exception as e:
+            print(f"⚠️ Error procesando colección {collection_name}: {e}")
+            sys.stdout.flush()
 
     # Fallback: si no hubo resultados con el filtro en Firestore (posible mezcla de tipos),
     # reintentar sin filtro en servidor y filtrar en Python dentro de process_document.
