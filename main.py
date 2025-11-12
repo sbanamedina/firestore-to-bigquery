@@ -224,24 +224,26 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
             # sample_value = sample_doc.to_dict().get(updated_field) if sample_doc else None
 
             # -----------------------
-            # Obtener varias muestras para detectar formato (mejor que 1 sola muestra)
+            # Obtener varias muestras para detectar formato 
             # -----------------------
-            samples = []
-            try:
-                for d in firestore_client.collection(collection_name).limit(10).stream():
-                    dd = d.to_dict()
-                    v = dd.get(updated_field)
-                    if v is None:
-                        continue
-                    # guardamos siempre como str para comparar longitudes
-                    samples.append(str(v).strip())
-            except Exception as e:
-                print(f"⚠️ Error al tomar muestras de la colección: {e}")
-                samples = []
+            docs = list(collection_ref.limit(20).stream())
+            sample_values = []
 
-            if samples:
+            for d in docs:
+                val = d.to_dict().get(updated_field)
+                if val:
+                    sample_values.append(str(val))
+
+            if not sample_values:
+                print(f"⚠️ No se encontraron valores de muestra para {updated_field}")
+                sys.stdout.flush()
+                return [], []
+
+            # Buscar la muestra más representativa (más reciente o más completa)
+            sample_value = None
+            if sample_values:
                 parsed_samples = []
-                for s in samples:
+                for s in sample_values:
                     try:
                         parsed = parser.parse(s, fuzzy=True)
                         parsed_samples.append((parsed, s))
@@ -255,9 +257,14 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                     sys.stdout.flush()
                 else:
                     # Si ninguna se pudo parsear, toma la más larga como fallback
-                    sample_value = max(samples, key=len)
+                    sample_value = max(sample_values, key=len)
                     print(f"⚠️ No se pudieron parsear las muestras, usando fallback: {sample_value}")
                     sys.stdout.flush()
+            else:
+                print(f"⚠️ No se encontraron valores de muestra para {updated_field}")
+                sys.stdout.flush()
+                return [], []
+
 
             # --- Detección de tipo de campo y aplicación de filtro ---
             if isinstance(sample_value, str):
