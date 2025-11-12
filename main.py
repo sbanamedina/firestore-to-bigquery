@@ -240,15 +240,24 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                 samples = []
 
             if samples:
-                # elegimos la muestra "más informativa" (la más larga — suele incluir hora)
-                sample_value = max(samples, key=len)
-                print(f"🔹 Muestra representativa del campo {updated_field}: {sample_value}")
-            else:
-                # fallback al primer doc (si no hay muestras válidas)
-                sample_doc = next(firestore_client.collection(collection_name).limit(1).stream(), None)
-                sample_value = sample_doc.to_dict().get(updated_field) if sample_doc else None
-                print(f"🔹 Muestra fallback del campo {updated_field}: {sample_value}")
+                parsed_samples = []
+                for s in samples:
+                    try:
+                        parsed = parser.parse(s, fuzzy=True)
+                        parsed_samples.append((parsed, s))
+                    except Exception:
+                        continue
 
+                if parsed_samples:
+                    # Elegir la más reciente (fecha máxima)
+                    sample_value = max(parsed_samples, key=lambda x: x[0])[1]
+                    print(f"🔹 Muestra representativa más reciente del campo {updated_field}: {sample_value}")
+                    sys.stdout.flush()
+                else:
+                    # Si ninguna se pudo parsear, toma la más larga como fallback
+                    sample_value = max(samples, key=len)
+                    print(f"⚠️ No se pudieron parsear las muestras, usando fallback: {sample_value}")
+                    sys.stdout.flush()
 
             # --- Detección de tipo de campo y aplicación de filtro ---
             if isinstance(sample_value, str):
