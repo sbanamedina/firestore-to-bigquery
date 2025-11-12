@@ -208,6 +208,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
     collection_ref = firestore_client.collection(collection_name)
     last_doc = None
     can_order_by_updated_field = True
+    server_side_filter_applied = False
 
     # -----------------------
     # Filtro incremental robusto
@@ -288,15 +289,19 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                     updated_before_str = updated_before.strftime("%Y-%m-%d %H:%M:%S") if updated_before else None
                     if updated_after:
                         collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after_str))
+                        server_side_filter_applied = True
                     if updated_before:
                         collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before_str))
+                        server_side_filter_applied = True
                     print(f"🧭 Campo {updated_field} detectado como STRING SQL, filtro aplicado: {updated_after_str or 'None'} → {updated_before_str or 'None'}")
                     sys.stdout.flush()
             elif isinstance(sample_raw_value, datetime):
                 if updated_after:
                     collection_ref = collection_ref.where(filter=FieldFilter(updated_field, ">", updated_after))
+                    server_side_filter_applied = True
                 if updated_before:
                     collection_ref = collection_ref.where(filter=FieldFilter(updated_field, "<=", updated_before))
+                    server_side_filter_applied = True
                 print(f"🕓 Campo {updated_field} detectado como TIMESTAMP, filtro aplicado directamente.")
                 sys.stdout.flush()
             else:
@@ -314,19 +319,14 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
         with concurrent.futures.ThreadPoolExecutor() as executor:
             while True:
                 if updated_field and can_order_by_updated_field:
-                    query = collection_ref.order_by(updated_field).order_by("__name__").limit(page_size)
+                    # Evitar índice compuesto: ordenar solo por el campo filtrado
+                    query = collection_ref.order_by(updated_field).limit(page_size)
                 else:
                     query = collection_ref.order_by("__name__").limit(page_size)
                 
                 if last_doc:
-                    if updated_field and can_order_by_updated_field:
-                        last_value = last_doc.to_dict().get(updated_field)
-                        if last_value is not None:
-                            query = query.start_after({updated_field: last_value, "__name__": last_doc.id})
-                        else:
-                            query = query.start_after({"__name__": last_doc.id})
-                    else:
-                        query = query.start_after({"__name__": last_doc.id})
+                    # Usar snapshot para evitar construir cursores compuestos
+                    query = query.start_after(last_doc)
 
                 docs = list(query.stream())
                 if not docs:
@@ -380,7 +380,7 @@ def process_collection(firestore_client, collection_name, sep='_', max_level=2, 
                     query = firestore_client.collection(collection_name).order_by("__name__").limit(page_size)
 
                     if last_doc:
-                        query = query.start_after({"__name__": last_doc.id})
+                        query = query.start_after(last_doc)
 
                     docs = list(query.stream())
                     if not docs:
