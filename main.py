@@ -335,6 +335,9 @@ def process_collection(db, collection_name, updated_field, updated_after, update
     sample_value = sample_doc.get(updated_field)
     print(f"🔹 Muestra de campo {updated_field}: {sample_value}")
 
+    updated_after_str = None
+    updated_before_str = None
+    
     # --- Detección de tipo de campo ---
     if isinstance(sample_value, str):
         sample_str = str(sample_value).strip()
