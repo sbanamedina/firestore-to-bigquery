@@ -37,7 +37,7 @@ def normalize_field_name(name):
     nfkd = unicodedata.normalize('NFKD', name)
     name = "".join([c for c in nfkd if not unicodedata.combining(c)])
     name = re.sub(r'\W+', '_', name)  # Sustituye todo lo no alfanumérico por "_"
-    return name.lower().strip('_')
+    return name.lower()
 
 
 def safe_stream(query, max_attempts=5, base_backoff=1.0):
