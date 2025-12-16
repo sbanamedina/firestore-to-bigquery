@@ -414,6 +414,28 @@ def export_firestore_to_bigquery(request):
     if not request_json or 'collection' not in request_json or 'table' not in request_json:
         return ({'error': 'Missing collection or table parameter in request'}), 400
 
+    target_project_id = request_json.get('project_id', 'sb-xops-prod')
+
+    PROJECT_CONFIG = {
+        'sb-xops-prod': {
+            # Si en xops NO tiene permisos IAM directos, se mantiene el secreto:
+            'method': 'secret',
+            'secret_name': 'sb-xops-prod_appspot_gserviceaccount'
+        },
+        'sb-iacorredores-prod': {
+            # Se usa 'adc' porque ya tiene permisos IAM
+            'method': 'adc', 
+            'secret_name': None 
+        }
+    }
+
+    if target_project_id not in PROJECT_CONFIG:
+        # Si llega un proyecto no configurado, intentamos usar ADC por defecto
+        print(f"⚠️ Proyecto {target_project_id} no explícito en config. Intentando usar ADC...")
+        config = {'method': 'adc'}
+    else:
+        config = PROJECT_CONFIG[target_project_id]
+
     var_main_collection = request_json['collection']
     var_table_id = request_json['table']
     handle_subcollections = request_json.get('handle_subcollections', False)
@@ -422,7 +444,7 @@ def export_firestore_to_bigquery(request):
     full_export = request_json.get('full_export', False)
     page_size = request_json.get('page_size', 2000)
     max_workers = request_json.get('max_workers', 32)
-    print(f'🟢 Parámetros -> Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
+    print(f'🟢 Parámetros -> Project: {target_project_id}, Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
     sys.stdout.flush()
     
     # if was_recently_executed_bq(var_main_collection, var_database):
@@ -466,10 +488,38 @@ def export_firestore_to_bigquery(request):
   
 
     # Cargar secretos y crear clientes
-    print("🔹 Cargando secretos y creando clientes")
+    #print("🔹 Cargando secretos y creando clientes")
+    #sys.stdout.flush()
+    #service_account_info = json.loads(access_secret_version("sb-operacional-zone", selected_config['secret_name']))
+    #firestore_client = firestore.Client(credentials=service_account.Credentials.from_service_account_info(service_account_info), project=target_project_id, database=var_database)
+    
+    print(f"🔹 Conectando a Firestore en: {target_project_id} usando método: {config['method']}")
     sys.stdout.flush()
-    service_account_info = json.loads(access_secret_version("sb-operacional-zone", "sb-xops-prod_appspot_gserviceaccount"))
-    firestore_client = firestore.Client(credentials=service_account.Credentials.from_service_account_info(service_account_info), project='sb-xops-prod', database=var_database)
+
+    try:
+        if config['method'] == 'secret':
+            # Usando archivo JSON desde Secret Manager
+            secret_payload = access_secret_version("sb-operacional-zone", config['secret_name'])
+            service_account_info = json.loads(secret_payload)
+            creds = service_account.Credentials.from_service_account_info(service_account_info)
+            
+            firestore_client = firestore.Client(
+                credentials=creds, 
+                project=target_project_id, 
+                database=var_database
+            )
+        else:
+            # MODO MODERNO (ADC): Usando los permisos IAM de la Cloud Run
+            # No pasamos 'credentials', la librería usa la identidad de service-account-oper-zone
+            firestore_client = firestore.Client(
+                project=target_project_id, 
+                database=var_database
+            )
+            
+    except Exception as e:
+        print(f"❌ Error inicializando Firestore para {target_project_id}: {e}")
+        return ({'error': f'Auth failed for {target_project_id}'}), 500
+
     bigquery_client = bigquery.Client(project='sb-operacional-zone')
     var_dataset_id = 'firestore'
 
