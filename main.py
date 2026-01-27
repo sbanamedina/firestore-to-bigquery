@@ -426,6 +426,10 @@ def export_firestore_to_bigquery(request):
             # Se usa 'adc' porque ya tiene permisos IAM
             'method': 'adc', 
             'secret_name': None 
+        },
+        'sb-iadaia-cap-dev': {
+            'method': 'adc',
+            'secret_name': None
         }
     }
 
