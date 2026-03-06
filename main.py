@@ -359,9 +359,9 @@ def process_collection(
                 query = collection_ref.order_by("__name__").limit(effective_page_size)
 
             if range_start:
-                query = query.start_at([collection_ref.document(range_start)])
+                query = query.start_at([range_start])
             if range_end:
-                query = query.end_at([collection_ref.document(range_end)])
+                query = query.end_at([range_end])
 
             if last_doc:
                 # Paginar usando el snapshot para evitar cursores compuestos
