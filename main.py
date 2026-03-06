@@ -227,6 +227,9 @@ def process_collection(
     updated_field=None,
     max_workers=32,
     stream_file=None,
+    name_prefix=None,
+    name_range_start=None,
+    name_range_end=None,
 ):
     fields = set()
     total_docs = 0
@@ -234,6 +237,21 @@ def process_collection(
     last_doc = None
     can_order_by_updated_field = True
     fallback_by_name = False
+
+    # -----------------------
+    # Filtros por nombre (__name__) para particionar
+    # -----------------------
+    if name_prefix:
+        start = name_prefix
+        end = name_prefix + "\uf8ff"
+        collection_ref = collection_ref.where(filter=FieldFilter("__name__", ">=", start)).where(
+            filter=FieldFilter("__name__", "<=", end)
+        )
+    if name_range_start or name_range_end:
+        if name_range_start:
+            collection_ref = collection_ref.where(filter=FieldFilter("__name__", ">=", name_range_start))
+        if name_range_end:
+            collection_ref = collection_ref.where(filter=FieldFilter("__name__", "<=", name_range_end))
 
     # -----------------------
     # Filtro incremental robusto
@@ -489,6 +507,9 @@ def export_firestore_to_bigquery(request):
     full_export = request_json.get('full_export', False)
     page_size = request_json.get('page_size', 2000)
     max_workers = request_json.get('max_workers', 32)
+    chunk_hours = request_json.get('chunk_hours')  # Opcional: particionar por ventanas de tiempo (requiere updated_field)
+    name_prefixes = request_json.get('name_prefixes')  # Opcional: lista de prefijos para particionar por __name__
+    name_ranges = request_json.get('name_ranges')  # Opcional: lista de rangos {start, end} para particionar por __name__
     print(f'🟢 Parámetros -> Project: {target_project_id}, Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
     sys.stdout.flush()
     
@@ -572,18 +593,81 @@ def export_firestore_to_bigquery(request):
     print(f"🔍 Procesando colección: {var_main_collection}")
     sys.stdout.flush()
     temp_file_path = '/tmp/firestore_data.json'
+    total_docs = 0
+    fields = set()
     with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
-        total_docs, fields = process_collection(
-            firestore_client,
-            var_main_collection,
-            page_size=page_size,
-            handle_subcollections=handle_subcollections,
-            updated_after=updated_after,
-            updated_before=updated_before,
-            updated_field=updated_field,
-            max_workers=max_workers,
-            stream_file=temp_file
-        )
+        if name_ranges:
+            for r in name_ranges:
+                start = r.get("start")
+                end = r.get("end")
+                print(f"🔀 Rango __name__: {start} -> {end}")
+                sys.stdout.flush()
+                part_docs, part_fields = process_collection(
+                    firestore_client,
+                    var_main_collection,
+                    page_size=page_size,
+                    handle_subcollections=handle_subcollections,
+                    updated_after=updated_after,
+                    updated_before=updated_before,
+                    updated_field=updated_field,
+                    max_workers=max_workers,
+                    stream_file=temp_file,
+                    name_range_start=start,
+                    name_range_end=end
+                )
+                total_docs += part_docs
+                fields.update(part_fields)
+        elif name_prefixes:
+            for prefix in name_prefixes:
+                print(f"🔀 Prefijo __name__: {prefix}")
+                sys.stdout.flush()
+                part_docs, part_fields = process_collection(
+                    firestore_client,
+                    var_main_collection,
+                    page_size=page_size,
+                    handle_subcollections=handle_subcollections,
+                    updated_after=updated_after,
+                    updated_before=updated_before,
+                    updated_field=updated_field,
+                    max_workers=max_workers,
+                    stream_file=temp_file,
+                    name_prefix=prefix
+                )
+                total_docs += part_docs
+                fields.update(part_fields)
+        elif chunk_hours and updated_field:
+            end_time = updated_before or datetime.now(timezone.utc)
+            cursor_time = updated_after or datetime(1970, 1, 1, tzinfo=timezone.utc)
+            while cursor_time < end_time:
+                window_end = min(cursor_time + timedelta(hours=chunk_hours), end_time)
+                print(f"⏱️ Ventana: {cursor_time} -> {window_end}")
+                sys.stdout.flush()
+                window_docs, window_fields = process_collection(
+                    firestore_client,
+                    var_main_collection,
+                    page_size=page_size,
+                    handle_subcollections=handle_subcollections,
+                    updated_after=cursor_time,
+                    updated_before=window_end,
+                    updated_field=updated_field,
+                    max_workers=max_workers,
+                    stream_file=temp_file
+                )
+                total_docs += window_docs
+                fields.update(window_fields)
+                cursor_time = window_end
+        else:
+            total_docs, fields = process_collection(
+                firestore_client,
+                var_main_collection,
+                page_size=page_size,
+                handle_subcollections=handle_subcollections,
+                updated_after=updated_after,
+                updated_before=updated_before,
+                updated_field=updated_field,
+                max_workers=max_workers,
+                stream_file=temp_file
+            )
 
     ###### Para colecciones que se bloquean
     # total_docs, fields = process_collection(firestore_client, bigquery_client,var_dataset_id,var_table_id,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_before=updated_before,updated_field=updated_field)
@@ -641,7 +725,8 @@ def export_firestore_to_bigquery(request):
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         autodetect=False,
-        max_bad_records=50
+        max_bad_records=500,
+        ignore_unknown_values=True
     )
     with open(temp_file_path, "rb") as source_file:
         print('📝 Cargando tabla temporal...')
@@ -719,8 +804,9 @@ def export_firestore_to_bigquery(request):
             schema=schema,
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-            autodetect=True,
-            max_bad_records=50
+            autodetect=False,
+            max_bad_records=500,
+            ignore_unknown_values=True
         )
         with open(temp_file_path, "rb") as source_file:
             bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
