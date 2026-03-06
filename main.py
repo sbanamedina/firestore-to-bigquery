@@ -52,6 +52,18 @@ def safe_stream(query, max_attempts=5, base_backoff=1.0):
             sys.stdout.flush()
             time.sleep(backoff)
     raise RuntimeError("❌ safe_stream: todos los intentos fallaron")
+
+def safe_get_doc(doc_ref, max_attempts=5, base_backoff=1.0, deadline=30):
+    """Obtiene un documento con reintentos y deadline acotado."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return doc_ref.get(timeout=deadline)
+        except (ServiceUnavailable, DeadlineExceeded, GoogleAPICallError) as e:
+            backoff = base_backoff * (2 ** (attempt - 1))
+            print(f"⚠️ safe_get_doc: intento {attempt}/{max_attempts} falló ({e}). Reintentando en {backoff}s...")
+            sys.stdout.flush()
+            time.sleep(backoff)
+    raise RuntimeError("❌ safe_get_doc: todos los intentos fallaron")
 # -------------------------------
 # Acceso a secretos
 # -------------------------------
@@ -121,9 +133,13 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
     example_docs = []
 
     try:
-        doc = doc_ref.get()
+        doc = safe_get_doc(doc_ref)
     except GoogleAPICallError as e:
         print(f"⚠️ Error al obtener doc {doc_ref.path}: {e}")
+        return example_docs, fields
+    except Exception as e:
+        print(f"⚠️ Error inesperado al obtener doc {doc_ref.path}: {e}")
+        sys.stdout.flush()
         return example_docs, fields
 
     if not doc.exists:
@@ -303,7 +319,13 @@ def process_collection(
                 for doc in docs
             ]
             for future in concurrent.futures.as_completed(futures):
-                doc_docs, doc_fields = future.result()
+                try:
+                    doc_docs, doc_fields = future.result()
+                except Exception as e:
+                    print(f"⚠️ Error procesando batch en {collection_name}: {e}")
+                    sys.stdout.flush()
+                    continue
+
                 fields.update(doc_fields)
                 batch_count += len(doc_docs)
                 if stream_file:
