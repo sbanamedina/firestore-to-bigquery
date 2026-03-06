@@ -54,18 +54,6 @@ def safe_stream(query, max_attempts=5, base_backoff=1.0):
             time.sleep(backoff)
     raise RuntimeError("❌ safe_stream: todos los intentos fallaron")
 
-def safe_get_doc(doc_ref, max_attempts=5, base_backoff=1.0, deadline=30):
-    """Obtiene un documento con reintentos y deadline acotado."""
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return doc_ref.get(timeout=deadline)
-        except (ServiceUnavailable, DeadlineExceeded, GoogleAPICallError, ssl.SSLError) as e:
-            backoff = base_backoff * (2 ** (attempt - 1))
-            print(f"⚠️ safe_get_doc: intento {attempt}/{max_attempts} falló ({e}). Reintentando en {backoff}s...")
-            sys.stdout.flush()
-            time.sleep(backoff)
-    raise RuntimeError("❌ safe_get_doc: todos los intentos fallaron")
-
 def safe_list_subcollections(doc_ref, max_attempts=3, base_backoff=1.0):
     """Lista subcolecciones con reintentos para evitar timeouts/EOF."""
     for attempt in range(1, max_attempts + 1):
@@ -79,6 +67,29 @@ def safe_list_subcollections(doc_ref, max_attempts=3, base_backoff=1.0):
     print(f"❌ safe_list_subcollections: todos los intentos fallaron para {doc_ref.path}")
     sys.stdout.flush()
     return []
+
+def flush_batch_to_bq(file_path, bigquery_client, table_ref, current_fields):
+    """Carga el lote actual a BigQuery permitiendo columnas nuevas y limpia el archivo."""
+    schema = [bigquery.SchemaField(f, "STRING", mode="NULLABLE") for f in current_fields]
+    job_config = bigquery.LoadJobConfig(
+        schema=schema,
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+        schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
+        autodetect=False,
+        max_bad_records=500,
+        ignore_unknown_values=True,
+    )
+    try:
+        with open(file_path, "rb") as source_file:
+            print("🚀 Enviando lote a BigQuery y liberando RAM...")
+            sys.stdout.flush()
+            bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config).result()
+    except Exception as e:
+        print(f"⚠️ Error al cargar el lote en BigQuery: {e}")
+        sys.stdout.flush()
+    # Limpia el archivo para el siguiente lote
+    open(file_path, "w").close()
 # -------------------------------
 # Acceso a secretos
 # -------------------------------
@@ -142,20 +153,14 @@ def flatten_dict(d, parent_key='', sep='_', level=1, max_level=2):
 # Procesamiento de documentos y colecciones
 # -------------------------------
 
-def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_level=2,
+def process_document(firestore_client, doc_snapshot, parent_path='', sep='_', max_level=2,
                      handle_subcollections=False, updated_after=None, updated_before=None, updated_field=None):
     fields = set()
     example_docs = []
 
-    try:
-        doc = safe_get_doc(doc_ref)
-    except GoogleAPICallError as e:
-        print(f"⚠️ Error al obtener doc {doc_ref.path}: {e}")
-        return example_docs, fields
-    except Exception as e:
-        print(f"⚠️ Error inesperado al obtener doc {doc_ref.path}: {e}")
-        sys.stdout.flush()
-        return example_docs, fields
+    # Usamos el snapshot ya obtenido para evitar llamadas extra
+    doc = doc_snapshot
+    doc_ref = doc.reference
 
     if not doc.exists:
         return example_docs, fields
@@ -215,7 +220,7 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
                     for sub_doc in safe_stream(subcollection):
                         sub_docs, sub_fields = process_document(
                             firestore_client,
-                            sub_doc.reference,
+                            sub_doc,
                             parent_path=subcollection_path,
                             sep=sep,
                             max_level=max_level,
@@ -246,13 +251,17 @@ def process_collection(
     updated_before=None,
     updated_field=None,
     max_workers=32,
-    stream_file=None,
+    temp_file_path=None,
+    bq_client=None,
+    temp_table_ref=None,
+    batch_size=50000,
     name_prefix=None,
     name_range_start=None,
     name_range_end=None,
 ):
     fields = set()
     total_docs = 0
+    records_in_current_batch = 0
     collection_ref = firestore_client.collection(collection_name)
     range_start = None
     range_end = None
@@ -346,12 +355,11 @@ def process_collection(
                 break
 
             batch_count = 0
-            batch_docs = []
             futures = [
                 executor.submit(
                     process_document,
                     firestore_client,
-                    doc.reference,
+                    doc,
                     f"{collection_name}{sep}{doc.id}",
                     sep,
                     max_level,
@@ -362,34 +370,41 @@ def process_collection(
                 )
                 for doc in docs
             ]
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    doc_docs, doc_fields = future.result()
-                except Exception as e:
-                    print(f"⚠️ Error procesando batch en {collection_name}: {e}")
-                    sys.stdout.flush()
-                    continue
 
-                fields.update(normalize_field_name(k) for k in doc_fields)
-                batch_count += len(doc_docs)
-                if stream_file:
-                    for doc in doc_docs:
-                        clean_doc = {normalize_field_name(k): safe_sql_string(serialize_value(v)) for k, v in doc.items()}
-                        stream_file.write(json.dumps(clean_doc, ensure_ascii=False) + '\n')
-                else:
-                    batch_docs.extend(doc_docs)
+            with open(temp_file_path, "a", encoding="utf-8") as stream_file:
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        doc_docs, doc_fields = future.result()
+                    except Exception as e:
+                        print(f"⚠️ Error procesando batch en {collection_name}: {e}")
+                        sys.stdout.flush()
+                        continue
+
+                    fields.update(normalize_field_name(k) for k in doc_fields)
+                    batch_count += len(doc_docs)
+                    records_in_current_batch += len(doc_docs)
+                    if temp_file_path and bq_client and temp_table_ref:
+                        for doc in doc_docs:
+                            clean_doc = {normalize_field_name(k): safe_sql_string(serialize_value(v)) for k, v in doc.items()}
+                            stream_file.write(json.dumps(clean_doc, ensure_ascii=False) + '\n')
 
             total_docs += batch_count
             if total_docs % 500 == 0 or len(docs) < page_size:
                 print(f"📊 Progreso: {total_docs} documentos procesados hasta ahora...")
                 sys.stdout.flush()
 
+            if temp_file_path and bq_client and temp_table_ref and records_in_current_batch >= batch_size:
+                current_fields = list(set(normalize_field_name(f) for f in fields))
+                flush_batch_to_bq(temp_file_path, bq_client, temp_table_ref, current_fields)
+                records_in_current_batch = 0
+
             last_doc = docs[-1]
             if len(docs) < page_size:
                 break
 
-    if stream_file:
-        stream_file.flush()
+    if temp_file_path and bq_client and temp_table_ref and records_in_current_batch > 0:
+        current_fields = list(set(normalize_field_name(f) for f in fields))
+        flush_batch_to_bq(temp_file_path, bq_client, temp_table_ref, current_fields)
     return total_docs, fields
 
 # -------------------------------
@@ -536,6 +551,7 @@ def export_firestore_to_bigquery(request):
     chunk_hours = request_json.get('chunk_hours')  # Opcional: particionar por ventanas de tiempo (requiere updated_field)
     name_prefixes = request_json.get('name_prefixes')  # Opcional: lista de prefijos para particionar por __name__
     name_ranges = request_json.get('name_ranges')  # Opcional: lista de rangos {start, end} para particionar por __name__
+    batch_size = request_json.get('batch_size', 50000)  # Tamaño de lote para flush a BigQuery
     print(f'🟢 Parámetros -> Project: {target_project_id}, Collection: {var_main_collection}, Table: {var_table_id}, Subcollections: {handle_subcollections}, DB: {var_database}')
     sys.stdout.flush()
     
@@ -614,76 +630,29 @@ def export_firestore_to_bigquery(request):
 
     bigquery_client = bigquery.Client(project='sb-operacional-zone')
     var_dataset_id = 'firestore'
+    temp_table_id = var_table_id + "_temp"
+    temp_table_ref = bigquery_client.dataset(var_dataset_id).table(temp_table_id)
+    try:
+        bigquery_client.delete_table(temp_table_ref, not_found_ok=True)
+    except Exception as e:
+        print(f"⚠️ No se pudo eliminar tabla temporal previa: {e}")
+        sys.stdout.flush()
+    bigquery_client.create_table(bigquery.Table(temp_table_ref, schema=[bigquery.SchemaField("id", "STRING")]), exists_ok=True)
 
     # Procesar colección
     print(f"🔍 Procesando colección: {var_main_collection}")
     sys.stdout.flush()
     temp_file_path = '/tmp/firestore_data.json'
+    open(temp_file_path, "w").close()  # limpiar archivo
     total_docs = 0
     fields = set()
-    with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
-        if name_ranges:
-            for r in name_ranges:
-                start = r.get("start")
-                end = r.get("end")
-                print(f"🔀 Rango __name__: {start} -> {end}")
-                sys.stdout.flush()
-                part_docs, part_fields = process_collection(
-                    firestore_client,
-                    var_main_collection,
-                    page_size=page_size,
-                    handle_subcollections=handle_subcollections,
-                    updated_after=updated_after,
-                    updated_before=updated_before,
-                    updated_field=updated_field,
-                    max_workers=max_workers,
-                    stream_file=temp_file,
-                    name_range_start=start,
-                    name_range_end=end
-                )
-                total_docs += part_docs
-                fields.update(part_fields)
-        elif name_prefixes:
-            for prefix in name_prefixes:
-                print(f"🔀 Prefijo __name__: {prefix}")
-                sys.stdout.flush()
-                part_docs, part_fields = process_collection(
-                    firestore_client,
-                    var_main_collection,
-                    page_size=page_size,
-                    handle_subcollections=handle_subcollections,
-                    updated_after=updated_after,
-                    updated_before=updated_before,
-                    updated_field=updated_field,
-                    max_workers=max_workers,
-                    stream_file=temp_file,
-                    name_prefix=prefix
-                )
-                total_docs += part_docs
-                fields.update(part_fields)
-        elif chunk_hours and updated_field:
-            end_time = updated_before or datetime.now(timezone.utc)
-            cursor_time = updated_after or datetime(1970, 1, 1, tzinfo=timezone.utc)
-            while cursor_time < end_time:
-                window_end = min(cursor_time + timedelta(hours=chunk_hours), end_time)
-                print(f"⏱️ Ventana: {cursor_time} -> {window_end}")
-                sys.stdout.flush()
-                window_docs, window_fields = process_collection(
-                    firestore_client,
-                    var_main_collection,
-                    page_size=page_size,
-                    handle_subcollections=handle_subcollections,
-                    updated_after=cursor_time,
-                    updated_before=window_end,
-                    updated_field=updated_field,
-                    max_workers=max_workers,
-                    stream_file=temp_file
-                )
-                total_docs += window_docs
-                fields.update(window_fields)
-                cursor_time = window_end
-        else:
-            total_docs, fields = process_collection(
+    if name_ranges:
+        for r in name_ranges:
+            start = r.get("start")
+            end = r.get("end")
+            print(f"🔀 Rango __name__: {start} -> {end}")
+            sys.stdout.flush()
+            part_docs, part_fields = process_collection(
                 firestore_client,
                 var_main_collection,
                 page_size=page_size,
@@ -692,8 +661,75 @@ def export_firestore_to_bigquery(request):
                 updated_before=updated_before,
                 updated_field=updated_field,
                 max_workers=max_workers,
-                stream_file=temp_file
+                temp_file_path=temp_file_path,
+                bq_client=bigquery_client,
+                temp_table_ref=temp_table_ref,
+                batch_size=batch_size,
+                name_range_start=start,
+                name_range_end=end
             )
+            total_docs += part_docs
+            fields.update(part_fields)
+    elif name_prefixes:
+        for prefix in name_prefixes:
+            print(f"🔀 Prefijo __name__: {prefix}")
+            sys.stdout.flush()
+            part_docs, part_fields = process_collection(
+                firestore_client,
+                var_main_collection,
+                page_size=page_size,
+                handle_subcollections=handle_subcollections,
+                updated_after=updated_after,
+                updated_before=updated_before,
+                updated_field=updated_field,
+                max_workers=max_workers,
+                temp_file_path=temp_file_path,
+                bq_client=bigquery_client,
+                temp_table_ref=temp_table_ref,
+                batch_size=batch_size,
+                name_prefix=prefix
+            )
+            total_docs += part_docs
+            fields.update(part_fields)
+    elif chunk_hours and updated_field:
+        end_time = updated_before or datetime.now(timezone.utc)
+        cursor_time = updated_after or datetime(1970, 1, 1, tzinfo=timezone.utc)
+        while cursor_time < end_time:
+            window_end = min(cursor_time + timedelta(hours=chunk_hours), end_time)
+            print(f"⏱️ Ventana: {cursor_time} -> {window_end}")
+            sys.stdout.flush()
+            window_docs, window_fields = process_collection(
+                firestore_client,
+                var_main_collection,
+                page_size=page_size,
+                handle_subcollections=handle_subcollections,
+                updated_after=cursor_time,
+                updated_before=window_end,
+                updated_field=updated_field,
+                max_workers=max_workers,
+                temp_file_path=temp_file_path,
+                bq_client=bigquery_client,
+                temp_table_ref=temp_table_ref,
+                batch_size=batch_size
+            )
+            total_docs += window_docs
+            fields.update(window_fields)
+            cursor_time = window_end
+    else:
+        total_docs, fields = process_collection(
+            firestore_client,
+            var_main_collection,
+            page_size=page_size,
+            handle_subcollections=handle_subcollections,
+            updated_after=updated_after,
+            updated_before=updated_before,
+            updated_field=updated_field,
+            max_workers=max_workers,
+            temp_file_path=temp_file_path,
+            bq_client=bigquery_client,
+            temp_table_ref=temp_table_ref,
+            batch_size=batch_size
+        )
 
     ###### Para colecciones que se bloquean
     # total_docs, fields = process_collection(firestore_client, bigquery_client,var_dataset_id,var_table_id,var_main_collection, page_size=page_size, handle_subcollections=handle_subcollections,updated_after=updated_after,updated_before=updated_before,updated_field=updated_field)
@@ -706,58 +742,11 @@ def export_firestore_to_bigquery(request):
     print(f"✅ Documentos extraídos: {total_docs}")
     sys.stdout.flush()
 
-    print('📝 Archivo JSONL temporal creado:', temp_file_path)
-    sys.stdout.flush()
-
-    # Verificación opcional de formato NDJSON (solo logs)
-    try:
-        with open(temp_file_path, 'r', encoding='utf-8') as check_file:
-            first_line = check_file.readline().strip()
-            if first_line:
-                json.loads(first_line)
-                print("✅ Archivo NDJSON válido (BigQuery podrá leerlo).")
-                sys.stdout.flush()
-            else:
-                print("⚠️ Archivo NDJSON vacío.")
-                sys.stdout.flush()
-    except Exception as e:
-        print(f"⚠️ Error validando NDJSON: {e}")
-    sys.stdout.flush()
-
-
-    # Crear esquema y tabla BigQuery
     # Normalizar nombres de campos para evitar errores en BigQuery
     fields = list(set(normalize_field_name(f) for f in fields))
     schema = [bigquery.SchemaField(f, "STRING", mode="NULLABLE") for f in fields]
     table_ref = bigquery_client.dataset(var_dataset_id).table(var_table_id)
     bigquery_client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
-
-    # -----------------------
-    # Cargar tabla temporal
-    # -----------------------
-    print('📝 Creando tabla temporal...')
-    sys.stdout.flush()
-    temp_table_id = var_table_id + "_temp"
-    temp_table_ref = bigquery_client.dataset(var_dataset_id).table(temp_table_id)
-    try:
-        bigquery_client.delete_table(temp_table_ref, not_found_ok=True)
-    except Exception as e:
-        print(f"⚠️ No se pudo eliminar tabla temporal previa: {e}")
-        sys.stdout.flush()
-    bigquery_client.create_table(bigquery.Table(temp_table_ref, schema=schema), exists_ok=True)
-
-    job_config_temp = bigquery.LoadJobConfig(
-        schema=schema,
-        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        autodetect=False,
-        max_bad_records=500,
-        ignore_unknown_values=True
-    )
-    with open(temp_file_path, "rb") as source_file:
-        print('📝 Cargando tabla temporal...')
-        sys.stdout.flush()
-        bigquery_client.load_table_from_file(source_file, temp_table_ref, job_config=job_config_temp).result()
 
     # -----------------------
     # MERGE / DELETE si incremental
@@ -823,20 +812,12 @@ def export_firestore_to_bigquery(request):
         sys.stdout.flush()
 
     else:
-        print('📝 Full export: sobrescribe la tabla...')
+        print('📝 Full export: copiando tabla temporal a destino...')
         sys.stdout.flush()
-        # Full export: sobrescribe la tabla
-        job_config_full = bigquery.LoadJobConfig(
-            schema=schema,
-            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-            autodetect=False,
-            max_bad_records=500,
-            ignore_unknown_values=True
-        )
-        with open(temp_file_path, "rb") as source_file:
-            bigquery_client.load_table_from_file(source_file, table_ref, job_config=job_config_full).result()
-        print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery")
+        copy_config = bigquery.CopyJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE)
+        copy_job = bigquery_client.copy_table(temp_table_ref, table_ref, job_config=copy_config)
+        copy_job.result()
+        print(f"✅ Datos cargados en la tabla {var_table_id} en BigQuery (full export)")
         sys.stdout.flush()
 
     duration = (datetime.now(timezone.utc) - start_time).total_seconds()
