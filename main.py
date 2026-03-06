@@ -326,11 +326,11 @@ def process_collection(
                     sys.stdout.flush()
                     continue
 
-                fields.update(doc_fields)
+                fields.update(normalize_field_name(k) for k in doc_fields)
                 batch_count += len(doc_docs)
                 if stream_file:
                     for doc in doc_docs:
-                        clean_doc = {k: safe_sql_string(serialize_value(v)) for k, v in doc.items()}
+                        clean_doc = {normalize_field_name(k): safe_sql_string(serialize_value(v)) for k, v in doc.items()}
                         stream_file.write(json.dumps(clean_doc, ensure_ascii=False) + '\n')
                 else:
                     batch_docs.extend(doc_docs)
