@@ -289,16 +289,24 @@ def process_collection(
     # -----------------------
     # Filtros por nombre (__name__) para particionar (usaremos start_at / end_at)
     # -----------------------
-    if name_prefix:
-        range_start = name_prefix
-        range_end = name_prefix + "\uf8ff"
-        can_order_by_updated_field = False
-        fallback_by_name = True
-    if name_range_start or name_range_end:
-        range_start = name_range_start
-        range_end = name_range_end
-        can_order_by_updated_field = False
-        fallback_by_name = True
+    if updated_field and (name_prefix or name_range_start or name_range_end):
+        print("⚠️ Se ignoran name_prefix/name_range porque hay filtro por updated_field (restricción Firestore).")
+        sys.stdout.flush()
+        range_start = None
+        range_end = None
+        can_order_by_updated_field = True
+        fallback_by_name = False
+    else:
+        if name_prefix:
+            range_start = name_prefix
+            range_end = name_prefix + "\uf8ff"
+            can_order_by_updated_field = False
+            fallback_by_name = True
+        if name_range_start or name_range_end:
+            range_start = name_range_start
+            range_end = name_range_end
+            can_order_by_updated_field = False
+            fallback_by_name = True
 
     # -----------------------
     # Filtro incremental robusto
@@ -354,7 +362,7 @@ def process_collection(
         while True:
             # Si el tipo del campo no es confiable, ordena por __name__ para garantizar resultados
             if updated_field and can_order_by_updated_field:
-                query = collection_ref.order_by(updated_field).limit(effective_page_size)
+                query = collection_ref.order_by(updated_field).order_by("__name__").limit(effective_page_size)
             else:
                 query = collection_ref.order_by("__name__").limit(effective_page_size)
 
