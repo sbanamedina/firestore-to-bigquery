@@ -297,7 +297,7 @@ def process_collection(
                 # Paginar usando el snapshot para evitar cursores compuestos
                 query = query.start_after(last_doc)
 
-            docs = list(query.stream())
+            docs = safe_stream(query)
             if not docs:
                 break
 
