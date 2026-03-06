@@ -629,13 +629,18 @@ def export_firestore_to_bigquery(request):
     sys.stdout.flush()
     temp_table_id = var_table_id + "_temp"
     temp_table_ref = bigquery_client.dataset(var_dataset_id).table(temp_table_id)
+    try:
+        bigquery_client.delete_table(temp_table_ref, not_found_ok=True)
+    except Exception as e:
+        print(f"⚠️ No se pudo eliminar tabla temporal previa: {e}")
+        sys.stdout.flush()
     bigquery_client.create_table(bigquery.Table(temp_table_ref, schema=schema), exists_ok=True)
 
     job_config_temp = bigquery.LoadJobConfig(
         schema=schema,
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        autodetect=True,
+        autodetect=False,
         max_bad_records=50
     )
     with open(temp_file_path, "rb") as source_file:
