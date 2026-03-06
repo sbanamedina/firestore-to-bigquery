@@ -6,6 +6,7 @@ import threading
 import concurrent.futures
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
+import ssl
 
 import functions_framework
 from google.cloud import firestore, bigquery, secretmanager
@@ -46,7 +47,7 @@ def safe_stream(query, max_attempts=5, base_backoff=1.0):
         try:
             return list(query.stream())
 
-        except (ServiceUnavailable, DeadlineExceeded, GoogleAPICallError) as e:
+        except (ServiceUnavailable, DeadlineExceeded, GoogleAPICallError, ssl.SSLError) as e:
             backoff = base_backoff * (2 ** (attempt - 1))
             print(f"⚠️ safe_stream: intento {attempt}/{max_attempts} falló ({e}). Reintentando en {backoff}s...")
             sys.stdout.flush()
@@ -58,12 +59,26 @@ def safe_get_doc(doc_ref, max_attempts=5, base_backoff=1.0, deadline=30):
     for attempt in range(1, max_attempts + 1):
         try:
             return doc_ref.get(timeout=deadline)
-        except (ServiceUnavailable, DeadlineExceeded, GoogleAPICallError) as e:
+        except (ServiceUnavailable, DeadlineExceeded, GoogleAPICallError, ssl.SSLError) as e:
             backoff = base_backoff * (2 ** (attempt - 1))
             print(f"⚠️ safe_get_doc: intento {attempt}/{max_attempts} falló ({e}). Reintentando en {backoff}s...")
             sys.stdout.flush()
             time.sleep(backoff)
     raise RuntimeError("❌ safe_get_doc: todos los intentos fallaron")
+
+def safe_list_subcollections(doc_ref, max_attempts=3, base_backoff=1.0):
+    """Lista subcolecciones con reintentos para evitar timeouts/EOF."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return list(doc_ref.collections())
+        except (ServiceUnavailable, DeadlineExceeded, GoogleAPICallError, ssl.SSLError) as e:
+            backoff = base_backoff * (2 ** (attempt - 1))
+            print(f"⚠️ safe_list_subcollections: intento {attempt}/{max_attempts} falló ({e}). Reintentando en {backoff}s...")
+            sys.stdout.flush()
+            time.sleep(backoff)
+    print(f"❌ safe_list_subcollections: todos los intentos fallaron para {doc_ref.path}")
+    sys.stdout.flush()
+    return []
 # -------------------------------
 # Acceso a secretos
 # -------------------------------
@@ -194,21 +209,26 @@ def process_document(firestore_client, doc_ref, parent_path='', sep='_', max_lev
 
     if handle_subcollections:
         try:
-            for subcollection in doc_ref.collections():
+            for subcollection in safe_list_subcollections(doc_ref):
                 subcollection_path = f"{parent_path}{sep}{subcollection.id}" if parent_path else subcollection.id
-                for sub_doc in safe_stream(subcollection): 
-                    sub_docs, sub_fields = process_document(
-                        firestore_client,
-                        sub_doc.reference,
-                        parent_path=subcollection_path,
-                        sep=sep,
-                        max_level=max_level,
-                        handle_subcollections=True,
-                        updated_after=updated_after,
-                        updated_field=updated_field
-                    )
-                    example_docs.extend(sub_docs)
-                    fields.update(sub_fields)
+                try:
+                    for sub_doc in safe_stream(subcollection):
+                        sub_docs, sub_fields = process_document(
+                            firestore_client,
+                            sub_doc.reference,
+                            parent_path=subcollection_path,
+                            sep=sep,
+                            max_level=max_level,
+                            handle_subcollections=True,
+                            updated_after=updated_after,
+                            updated_field=updated_field
+                        )
+                        example_docs.extend(sub_docs)
+                        fields.update(sub_fields)
+                except Exception as e:
+                    print(f"⚠️ Error al procesar subcollection {subcollection.id} de {doc_ref.path}: {e}")
+                    sys.stdout.flush()
+                    continue
         except Exception as e:
             print(f"⚠️ Error al listar subcollections de {doc_ref.path}: {e}")
             sys.stdout.flush()
