@@ -355,7 +355,7 @@ def process_collection(
     # Paginación y procesamiento de documentos
     # -----------------------
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        effective_page_size = page_size if can_order_by_updated_field else min(page_size, 500)
+        effective_page_size = page_size if can_order_by_updated_field else min(page_size, 2000)
         if fallback_by_name:
             print(f"🔁 Fallback activo: ordenando por __name__ con page_size={effective_page_size}")
             sys.stdout.flush()
