@@ -234,24 +234,25 @@ def process_collection(
     fields = set()
     total_docs = 0
     collection_ref = firestore_client.collection(collection_name)
+    range_start = None
+    range_end = None
     last_doc = None
     can_order_by_updated_field = True
     fallback_by_name = False
 
     # -----------------------
-    # Filtros por nombre (__name__) para particionar
+    # Filtros por nombre (__name__) para particionar (usaremos start_at / end_at)
     # -----------------------
     if name_prefix:
-        start = name_prefix
-        end = name_prefix + "\uf8ff"
-        collection_ref = collection_ref.where(filter=FieldFilter("__name__", ">=", start)).where(
-            filter=FieldFilter("__name__", "<=", end)
-        )
+        range_start = name_prefix
+        range_end = name_prefix + "\uf8ff"
+        can_order_by_updated_field = False
+        fallback_by_name = True
     if name_range_start or name_range_end:
-        if name_range_start:
-            collection_ref = collection_ref.where(filter=FieldFilter("__name__", ">=", name_range_start))
-        if name_range_end:
-            collection_ref = collection_ref.where(filter=FieldFilter("__name__", "<=", name_range_end))
+        range_start = name_range_start
+        range_end = name_range_end
+        can_order_by_updated_field = False
+        fallback_by_name = True
 
     # -----------------------
     # Filtro incremental robusto
@@ -310,6 +311,11 @@ def process_collection(
                 query = collection_ref.order_by(updated_field).limit(effective_page_size)
             else:
                 query = collection_ref.order_by("__name__").limit(effective_page_size)
+
+            if range_start:
+                query = query.start_at([collection_ref.document(range_start)])
+            if range_end:
+                query = query.end_at([collection_ref.document(range_end)])
 
             if last_doc:
                 # Paginar usando el snapshot para evitar cursores compuestos
