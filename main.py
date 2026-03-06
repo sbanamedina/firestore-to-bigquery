@@ -90,6 +90,23 @@ def flush_batch_to_bq(file_path, bigquery_client, table_ref, current_fields):
         sys.stdout.flush()
     # Limpia el archivo para el siguiente lote
     open(file_path, "w").close()
+
+def ensure_table_fields(bigquery_client, table_ref, fields):
+    """Agrega columnas faltantes en la tabla destino antes del MERGE."""
+    try:
+        table = bigquery_client.get_table(table_ref)
+        existing = {schema_field.name for schema_field in table.schema}
+        missing = [f for f in fields if f not in existing]
+        if not missing:
+            return
+        add_clause = ", ".join([f"ADD COLUMN IF NOT EXISTS `{c}` STRING" for c in missing])
+        ddl = f"ALTER TABLE `{table_ref.project}.{table_ref.dataset_id}.{table_ref.table_id}` {add_clause}"
+        print(f"🧭 Agregando columnas faltantes: {missing}")
+        sys.stdout.flush()
+        bigquery_client.query(ddl).result()
+    except Exception as e:
+        print(f"⚠️ No se pudieron agregar columnas faltantes: {e}")
+        sys.stdout.flush()
 # -------------------------------
 # Acceso a secretos
 # -------------------------------
@@ -747,6 +764,7 @@ def export_firestore_to_bigquery(request):
     schema = [bigquery.SchemaField(f, "STRING", mode="NULLABLE") for f in fields]
     table_ref = bigquery_client.dataset(var_dataset_id).table(var_table_id)
     bigquery_client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
+    ensure_table_fields(bigquery_client, table_ref, fields)
 
     # -----------------------
     # MERGE / DELETE si incremental
@@ -754,6 +772,7 @@ def export_firestore_to_bigquery(request):
     if not full_export:
         print('📝 Merge / Delete si incremental...')
         sys.stdout.flush()
+        ensure_table_fields(bigquery_client, table_ref, fields)
         merge_sql = f"""
             MERGE `{var_dataset_id}.{var_table_id}` T
             USING `{var_dataset_id}.{temp_table_id}` S
